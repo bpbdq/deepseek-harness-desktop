@@ -12,7 +12,7 @@
 //   node scripts/stage-runtime.mjs next                # follow a dist-tag (latest|next|alpha)
 import { execFileSync } from 'node:child_process'
 import { createRequire } from 'node:module'
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 
 const ROOT = resolve(import.meta.dirname, '..')
@@ -75,10 +75,35 @@ const require = createRequire(join(RUNTIME, 'package.json'))
 const anchor = require.resolve(`${PKG}/package.json`)
 const version = JSON.parse(readFileSync(anchor, 'utf8')).version
 
+/**
+ * 把随包内置的客户端插件装进 runtime/node_modules。
+ *
+ * 为什么必须在这里做：插件的客户端半边要被 dsh 的模块系统发现，前提是 host 侧能
+ * 从安装位置 resolve 到它的 `package.json`。而 `server.mjs` 会在启动时把它链进
+ * profile 的 node_modules，因此先要让它存在于 runtime 的依赖树旁。
+ *
+ * 放在 npm install 之后是因为 npm 可能重建 node_modules 目录；放这里能保证插件不
+ * 会被后续安装动作清掉。
+ */
+const bundledPluginsDir = join(ROOT, 'plugins')
+const plugins = existsSync(bundledPluginsDir) ? readdirSync(bundledPluginsDir) : []
+for (const plugin of plugins) {
+  const source = join(bundledPluginsDir, plugin)
+  if (!existsSync(join(source, 'package.json'))) continue
+  const destination = join(RUNTIME, 'node_modules', plugin)
+  rmSync(destination, { recursive: true, force: true })
+  cpSync(source, destination, { recursive: true })
+  console.log(`[stage-runtime] 内置插件 ${plugin} -> runtime/node_modules/`)
+}
+
 // Record what was staged: the app reads this to know the in-box baseline version.
 writeFileSync(
   join(RUNTIME, 'runtime.json'),
-  JSON.stringify({ package: PKG, version, stagedAt: new Date().toISOString(), registry }, null, 2) + '\n',
+  JSON.stringify(
+    { package: PKG, version, stagedAt: new Date().toISOString(), registry, plugins },
+    null,
+    2,
+  ) + '\n',
 )
 
 console.log(`[stage-runtime] staged ${PKG}@${version} in ${((Date.now() - start) / 1000).toFixed(1)}s`)

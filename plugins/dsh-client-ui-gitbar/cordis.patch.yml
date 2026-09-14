@@ -1,0 +1,19 @@
+# gitbar bundle 的挂载层。
+#
+# 结构照 @deepseek-ai/dsh-base 的 cordis.patch.yml：**新增行必须包在 `- insert:`
+# 之下**，而不是直接列在顶层。
+#
+# 踩过的坑：最初写成顶层的
+#     - id: ui-gitbar
+#       name: dsh-client-ui-gitbar
+# 结果是**静默无效**——顶层行被当作"按 id 覆盖既有行"，而 `ui-gitbar` 这个 id 并不
+# 存在，于是既没人报错也没人生效（路由 404、客户端不进 boot graph，服务端输出却是
+# 干净的）。patch 的语义是"按 id 覆盖、last write wins"，不写 `insert` 就等于在改
+# 一个不存在的行。
+- insert:
+    # 一个条目同时提供两半：
+    #   host   —— lib/index.js 注册 git 的 HTTP 路由
+    #   client —— lib/client.js 往 conversation.input.right 插分支徽章
+    # 两半由 package.json 的 `dsh.client` 声明配对，因此这里只需要一行。
+    - id: ui-gitbar
+      name: dsh-client-ui-gitbar

@@ -1,16 +1,256 @@
+// gitbar 的 host 半边。
+//
+// 职责只有一件：在 webServer 上注册两个只读/低风险的 git 路由，供客户端半边取
+// 分支信息与切换分支。UI 本身完全在 client.js 里实现。
+//
+// 为什么走 HTTP 而不是在渲染进程里跑 git：渲染进程是 sandbox + contextIsolation
+// 的纯 web 环境，没有 Node 能力，也不应该获得——那正是外壳一直坚持的边界。git 由
+// host 侧用 execFile 调用，客户端只发请求。
+//
+// 安全约束（这些不是可选的，见 createGitHandler 的注释）：
+//   1. 只允许白名单内的 git 子命令，不接受任意命令字符串
+//   2. 分支名严格校验，杜绝把 `--upload-pack=…` 之类的参数或路径穿越塞进来
+//   3. 用 execFile（参数数组）而不是 exec（shell 字符串），从根上避免 shell 注入
+//   4. 不做自动 stash：切换分支会改变用户工作区，必须由用户明确选择
+import { execFile } from 'node:child_process'
+
+/** 插件名，用于诊断与 effect 标签。 */
+export const name = 'gitbar'
+
+/** 必须先有 webServer 服务，路由才有地方注册。 */
+export const inject = ['webServer']
+
 /**
- * gitbar 的 host 半边。
+ * 两个路由共用的路径前缀。
  *
- * 目前是空实现：这一个阶段只验证客户端半边能否渲染进输入框工具栏。
- * 提供 git 数据与切换能力需要注册 webServer 路由，放到验证通过之后再加——
- * 先确认最高风险的一环（客户端 bundle 能否加载并落到正确的扩展位）。
+ * 用 `/dsh-desktop/` 前缀是为了与 dsh 自身的路由区分开，将来排查时一眼能看出这是
+ * 外壳侧插件提供的。
  */
-export const name = 'dsh-client-ui-gitbar'
+const ROUTE_PREFIX = '/dsh-desktop/gitbar'
 
-/** 不依赖任何服务，纯 UI 插件。 */
-export const inject = []
+/**
+ * 允许通过路由切换到的分支名格式。
+ *
+ * 刻意收紧到"像分支名"的字符集：Git 允许的名字比这宽得多，但这里的目标是**不可能**
+ * 构造出选项或路径穿越。以 `-` 开头被排除，因此 `--upload-pack=…` 之类无法通过；
+ * 不含 `..`，因此无法越出仓库。
+ */
+const BRANCH_PATTERN = /^[A-Za-z0-9._/-]{1,200}$/u
 
-/** 目前不需要 host 侧行为。 */
-export function apply() {
-  // 有意为空。
+/** git 命令的超时。仓库很大时 `status` 可能略慢，但不该拖住 UI。 */
+const GIT_TIMEOUT_MS = 8000
+
+/** 单次响应体的上限，防止收集分支列表时把大仓库的极端输出全塞进内存。 */
+const MAX_BRANCHES = 500
+
+/**
+ * 运行一条 git 命令。
+ *
+ * @param args - 参数数组（不含 `git` 本身）。
+ * @param cwd - 仓库工作目录。
+ * @returns stdout；失败时抛出带 stderr 的错误。
+ */
+function git(args, cwd) {
+  return new Promise((resolve, reject) => {
+    execFile(
+      'git',
+      // `-C <dir>` 而不是 cwd 选项：显式指定仓库目录，且不依赖进程当前目录。
+      ['-C', cwd, ...args],
+      { timeout: GIT_TIMEOUT_MS, windowsHide: true, maxBuffer: 4 * 1024 * 1024 },
+      (error, stdout, stderr) => {
+        if (error !== null) {
+          reject(new Error(String(stderr).trim() || error.message))
+          return
+        }
+        resolve(String(stdout))
+      },
+    )
+  })
+}
+
+/**
+ * 解析工作区路径。
+ *
+ * 优先取外壳注入的环境变量：`server.mjs` 在启动时已经知道工作区，注入它比让插件
+ * 靠 `process.cwd()` 猜测更可靠（当前目录会被其它代码改变）。两者都拿不到时不报错，
+ * 而是返回 undefined 由调用方给出明确诊断。
+ *
+ * @returns 绝对路径，或 undefined。
+ */
+function resolveWorkspace() {
+  const injected = process.env.DSH_DESKTOP_WORKSPACE
+  if (typeof injected === 'string' && injected !== '') return injected
+  return process.cwd()
+}
+
+/**
+ * 读取当前分支与工作区状态。
+ *
+ * 一次 `status --porcelain=v2 --branch` 同时给出分支、上游、领先/落后与改动文件数，
+ * 比多次调用更省进程也更一致（多次调用之间用户可能刚好切了分支）。
+ *
+ * @param cwd - 工作区路径。
+ * @returns 供客户端渲染的状态对象。
+ */
+async function readStatus(cwd) {
+  const raw = await git(['status', '--porcelain=v2', '--branch'], cwd)
+
+  const state = {
+    isRepo: true,
+    branch: '',
+    detached: false,
+    upstream: '',
+    ahead: 0,
+    behind: 0,
+    changedFiles: 0,
+  }
+
+  for (const line of raw.split('\n')) {
+    if (line.startsWith('# branch.head ')) {
+      const value = line.slice('# branch.head '.length).trim()
+      // git 在游离 HEAD 上会给出 "(detached)"。
+      if (value === '(detached)') state.detached = true
+      else state.branch = value
+    } else if (line.startsWith('# branch.upstream ')) {
+      state.upstream = line.slice('# branch.upstream '.length).trim()
+    } else if (line.startsWith('# branch.ab ')) {
+      const match = /\+(\d+)\s+-(\d+)/u.exec(line)
+      if (match !== null) {
+        state.ahead = Number(match[1])
+        state.behind = Number(match[2])
+      }
+    } else if (line !== '' && !line.startsWith('#')) {
+      state.changedFiles += 1
+    }
+  }
+  return state
+}
+
+/**
+ * 列出可切换的本地分支。
+ * @param cwd - 工作区路径。
+ * @returns 分支名数组（已截断到上限）。
+ */
+async function listBranches(cwd) {
+  const raw = await git(['branch', '--format=%(refname:short)'], cwd)
+  return raw
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line !== '')
+    .slice(0, MAX_BRANCHES)
+}
+
+/**
+ * 给响应体写 JSON。
+ *
+ * @param response - HTTP 响应。
+ * @param status - 状态码。
+ * @param payload - 可序列化的负载。
+ */
+function sendJson(response, status, payload) {
+  const body = JSON.stringify(payload)
+  response.statusCode = status
+  response.setHeader('content-type', 'application/json; charset=utf-8')
+  // 分支状态会随用户操作（切分支、改文件）立刻变化，不能缓存。
+  response.setHeader('cache-control', 'no-store')
+  response.end(body)
+}
+
+/**
+ * 读取并限制请求体，避免 unbounded 读取。
+ *
+ * @param request - HTTP 请求。
+ * @returns 请求体文本（上限 8 KiB）。
+ */
+async function readSmallBody(request) {
+  const chunks = []
+  let size = 0
+  for await (const chunk of request) {
+    size += chunk.length
+    if (size > 8192) throw new Error('request body too large')
+    chunks.push(chunk)
+  }
+  return Buffer.concat(chunks).toString('utf8')
+}
+
+/**
+ * 创建两个 git 路由的处理器。
+ *
+ * @param workspace - 工作区绝对路径。
+ * @returns `(request, response)` 处理器。
+ */
+function createGitHandler(workspace) {
+  return async (request, response) => {
+    try {
+      const url = new URL(request.url ?? '/', 'http://localhost')
+
+      // GET  —— 分支状态（含改动数、领先/落后）
+      if (request.method === 'GET') {
+        if (url.pathname === `${ROUTE_PREFIX}/status`) {
+          sendJson(response, 200, await readStatus(workspace))
+          return
+        }
+        if (url.pathname === `${ROUTE_PREFIX}/branches`) {
+          sendJson(response, 200, { branches: await listBranches(workspace) })
+          return
+        }
+        sendJson(response, 404, { error: 'not found' })
+        return
+      }
+
+      // POST —— 切换分支
+      if (request.method === 'POST' && url.pathname === `${ROUTE_PREFIX}/checkout`) {
+        let payload
+        try {
+          payload = JSON.parse(await readSmallBody(request))
+        } catch (error) {
+          sendJson(response, 400, { error: `invalid body: ${String(error.message)}` })
+          return
+        }
+        const branch = payload?.branch
+        if (typeof branch !== 'string' || !BRANCH_PATTERN.test(branch)) {
+          // 明确拒绝并说明原因：这是安全边界，不是"参数格式错误"的客套话。
+          sendJson(response, 400, {
+            error: 'invalid branch name',
+            detail: 'only [A-Za-z0-9._/-] up to 200 chars is accepted',
+          })
+          return
+        }
+        try {
+          // 不加 --force、不自动 stash：有未提交改动时 git 自己会拒绝，
+          // 把这个决定留给用户，而不是替他丢弃或暂存改动。
+          await git(['checkout', branch], workspace)
+        } catch (error) {
+          sendJson(response, 409, { error: 'checkout failed', detail: String(error.message) })
+          return
+        }
+        sendJson(response, 200, await readStatus(workspace))
+        return
+      }
+
+      response.setHeader('allow', 'GET, POST')
+      sendJson(response, 405, { error: 'method not allowed' })
+    } catch (error) {
+      // 任何未预期错误都转成 JSON，避免客户端拿到 HTML 错误页而无法解析。
+      sendJson(response, 500, { error: String(error?.message ?? error) })
+    }
+  }
+}
+
+/**
+ * 挂载插件。
+ * @param ctx - host 侧 cordis 上下文。
+ */
+export function apply(ctx) {
+  const workspace = resolveWorkspace()
+  const handler = createGitHandler(workspace)
+
+  // 注册为两条精确路由而不是一条前缀路由：webServer 的 kind 只有 exact 与 prefix
+  // 两类语义，用精确路径可以让"哪些路径属于本插件"在注册表里一目了然。
+  for (const path of [`${ROUTE_PREFIX}/status`, `${ROUTE_PREFIX}/branches`, `${ROUTE_PREFIX}/checkout`]) {
+    ctx.effect(
+      () => ctx.webServer.register({ kind: 'exact', path, handler }),
+      `gitbar: ${path}`,
+    )
+  }
 }

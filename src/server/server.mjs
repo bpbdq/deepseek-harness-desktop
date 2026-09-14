@@ -19,7 +19,7 @@
  *   - `dsh web: <url>?token=<token>` is printed by dsh-web-app itself
  *   - `[dsh-desktop] ready` is printed by us immediately afterwards
  */
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 
 import {
@@ -40,6 +40,18 @@ const PROFILE_ROOT_FILENAME = 'cordis.yml'
 
 /** The bundles the desktop profile composes. Same pair as the shipped `web` profile. */
 const DESKTOP_BUNDLES = ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app']
+
+/**
+ * 随本应用内置的客户端插件（profile bundle）。
+ *
+ * 放在 runtime/node_modules 下由 `scripts/stage-runtime.mjs` 就位；每个插件导出
+ * `./client` 与 `dsh.bundle.patch`，因此既提供 host 半边也提供客户端半边。
+ *
+ * 它们必须被声明为 profile 的 bundle 才会被挂载——bundle 的 patch 层用 `insert`
+ * 挂载插件。而 dsh 的模块解析要求 bundle 能从安装位置或 profile 目录解析到，所以
+ * `linkBundledPlugins` 会把它们链进 profile 的 node_modules。
+ */
+const BUNDLED_PLUGINS = ['dsh-client-ui-gitbar']
 
 const PROFILE_ROOT_CONFIG = `# dsh-desktop profile root — an empty entry list.
 #
@@ -88,15 +100,91 @@ function parseArgs(argv) {
 }
 
 /**
+ * 让 profile 只使用「核心 bundle + 当前实际存在的内置插件」。
+ *
+ * 不硬编码插件的存在：插件缺席时不会因为解析失败而整个 boot 失败，而插件一旦随包
+ * 发布就自动生效，用户无需任何手工步骤。
+ *
+ * @param dir - profile 目录。
+ * @param available - 当前可用的内置插件名。
+ */
+function reconcileBundles(dir, available) {
+  const manifestPath = join(dir, 'package.json')
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
+  const wanted = [...DESKTOP_BUNDLES, ...available]
+  const current = manifest.dsh?.profile?.bundles
+
+  // 只在真的不同时才写文件：profile 目录被 dsh 监听，无谓的写入会触发重载。
+  if (
+    Array.isArray(current) &&
+    current.length === wanted.length &&
+    current.every((value, index) => value === wanted[index])
+  ) {
+    return
+  }
+  manifest.dsh = {
+    ...manifest.dsh,
+    profile: { ...manifest.dsh?.profile, bundles: wanted, patchReload: 'live' },
+  }
+  writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n')
+}
+
+/**
+ * 把 runtime 里内置的插件链进 profile 的 node_modules。
+ *
+ * 为什么需要这一步：客户端插件要被 dsh 的模块系统发现，前提是 host 侧能从安装位置
+ * 或 profile 目录 resolve 到它的 `package.json`（`resolveBundleDir` 按这两个锚点
+ * 解析）。`profiles/node_modules` 只由安装闭包填充，而内置插件不在 dsh 的依赖里，
+ * 因此必须由外壳自己把它链进 profile。
+ *
+ * 用链接而不是复制：运行时更新会替换整个 runtime/，复制出的副本会与新版本脱节。
+ *
+ * @param dir - profile 目录。
+ * @param installAnchor - dsh 包的 package.json 绝对路径。
+ * @returns 实际就位的插件名（用于写进 profile 的 bundle 列表）。
+ */
+function linkBundledPlugins(dir, installAnchor) {
+  // runtime/node_modules —— 从 <runtime>/node_modules/@deepseek-ai/dsh/package.json 上溯三级。
+  const runtimeModules = dirname(dirname(dirname(installAnchor)))
+  const profileModules = join(dir, 'node_modules')
+  mkdirSync(profileModules, { recursive: true })
+
+  const ready = []
+  for (const plugin of BUNDLED_PLUGINS) {
+    const source = join(runtimeModules, plugin)
+    if (!existsSync(join(source, 'package.json'))) continue
+
+    const link = join(profileModules, plugin)
+    try {
+      if (existsSync(link)) {
+        // 已指向同一目标就跳过；否则先删再建，避免旧链接指向已失效的路径。
+        if (realpathSync(link) === realpathSync(source)) {
+          ready.push(plugin)
+          continue
+        }
+        rmSync(link, { recursive: true, force: true })
+      }
+      symlinkSync(source, link, 'junction')
+      ready.push(plugin)
+    } catch (error) {
+      // 链接失败不该让整个应用起不来：报一条可诊断的警告后继续。
+      console.error(`[dsh-desktop] 警告: 无法链接内置插件 ${plugin}: ${error.message}`)
+    }
+  }
+  return ready
+}
+
+/**
  * Create the desktop profile on first run.
  *
  * The profile is application-owned: its package project and lifecycle belong to
  * this app, so it is never resolved through the shipped profile templates and
  * never collides with a `dsh --profile desktop` invocation (which the CLI refuses).
  * @param home - the Harness home.
+ * @param installAnchor - dsh 包的 package.json 绝对路径（用于定位内置插件）。
  * @returns the absolute profile directory.
  */
-function ensureProfile(home) {
+function ensureProfile(home, installAnchor) {
   const dir = join(home, 'profiles', PROFILE_NAME)
   mkdirSync(dir, { recursive: true })
 
@@ -118,6 +206,11 @@ function ensureProfile(home) {
   }
   const patchPath = join(dir, PROFILE_PATCH_FILENAME)
   if (!existsSync(patchPath)) writeFileSync(patchPath, PROFILE_PATCH_TEMPLATE)
+
+  // 内置插件就位后才登记 bundle：先链接、再写列表，顺序反了会让 dsh 在启动时
+  // 遇到一个解析不到的 bundle 而直接失败。
+  const plugins = linkBundledPlugins(dir, installAnchor)
+  reconcileBundles(dir, plugins)
 
   // The Loader needs a real include root to anchor `baseUrl` at the profile
   // directory; it is always rewritten because tree write-back can bake composed
@@ -187,9 +280,15 @@ async function main() {
   mkdirSync(workspace, { recursive: true })
   process.chdir(workspace)
 
-  const profileDir = ensureProfile(home)
+  const profileDir = ensureProfile(home, installAnchor)
   const profile = loadProfileDirectory(BIN_NAME, profileDir, installAnchor)
   mark(`profile 装载（${profile.layers.length} 个 bundle 层）`)
+
+  // 把工作区路径交给插件，供 gitbar 的 host 半边调用 git。
+  //
+  // 用环境变量而不是让插件读 process.cwd()：当前目录在启动过程中会被 chdir 改变，
+  // 而工作区是启动参数、应当是唯一权威。与既有的 DSH_DESKTOP_RUNTIME_VERSION 同一做法。
+  process.env.DSH_DESKTOP_WORKSPACE = workspace
 
   // Link the installation's dependency closure into $DSH_HOME/profiles/node_modules
   // and reconcile the profile-local links. This is what makes the bundled runtime
