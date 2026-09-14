@@ -14,6 +14,7 @@ export interface TrayActions {
   show: () => void
   restartServer: () => void
   checkForUpdates: () => void
+  projectInfo: () => void
   quit: () => void
 }
 
@@ -35,6 +36,7 @@ export function createTray(iconPath: string | undefined, actions: TrayActions): 
     Menu.buildFromTemplate([
       { label: strings.trayShow, click: actions.show },
       { type: 'separator' },
+      { label: strings.itemProjectInfo, click: actions.projectInfo },
       { label: strings.trayRestart, click: actions.restartServer },
       { label: strings.trayCheckUpdates, click: actions.checkForUpdates },
       { type: 'separator' },

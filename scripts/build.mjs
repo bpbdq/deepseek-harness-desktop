@@ -20,7 +20,7 @@
 //   Linux    AppImage / deb / rpm   需 Linux 版 mksquashfs 与 fpm，本机不可
 //   macOS    dmg / zip              需 hdiutil / codesign，只在 macOS 上存在
 import { execFileSync } from 'node:child_process'
-import { existsSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 
 const ROOT = resolve(import.meta.dirname, '..')
@@ -80,19 +80,33 @@ function version() {
   return JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version
 }
 
-/** 逐个打印产物大小。 */
+/**
+ * 打印产物大小，并写一个 `release/latest.txt` 指向最新版本目录。
+ *
+ * 产物按版本分目录存放（`release/<版本>/`），文件名里不带版本号；这里只扫当前
+ * 版本目录，避免把历史版本的产物也列进来。
+ */
 function reportArtifacts() {
-  const dir = join(ROOT, 'release')
-  if (!existsSync(dir)) return
+  const current = version()
+  const versionDir = join(ROOT, 'release', current)
+  if (!existsSync(versionDir)) return
   const wanted = /\.(exe|msi|AppImage|deb|rpm|dmg|zip|blockmap|yml)$/iu
-  const files = readdirSync(dir).filter((name) => wanted.test(name))
+  const files = readdirSync(versionDir).filter((name) => wanted.test(name))
+
+  // latest.txt 让"最新版本是哪个"不用猜，脚本和用户都能直接看。
+  try {
+    writeFileSync(join(ROOT, 'release', 'latest.txt'), `${current}\n`, 'utf8')
+  } catch {
+    // 便利文件，写不了不影响产物。
+  }
+
   if (files.length === 0) return
 
   console.log('\n[build] ------------------------------------------------------------')
-  console.log('[build]  产物')
+  console.log(`[build]  产物  release/${current}/`)
   console.log('[build] ------------------------------------------------------------')
   for (const name of files) {
-    const size = statSync(join(dir, name)).size
+    const size = statSync(join(versionDir, name)).size
     const mb = (size / 1048576).toFixed(1).padStart(7)
     console.log(`[build] ${mb} MB   ${name}`)
   }
@@ -153,14 +167,18 @@ function help() {
   console.log(`
 DeepSeek Harness 桌面版 —— 打包
 
-  build.bat                 打包 Windows（setup.exe + .msi）
+  build.bat                 打包 Windows（默认只出 setup.exe）
   build.bat win             同上
-  build.bat msi             只打包 .msi
+  build.bat msi             额外打包 .msi（慢，见下）
   build.bat linux           显示 Linux 打包说明（Windows 上无法执行）
   build.bat all             同 win（非 Windows 目标需 CI 或对应平台）
   build.bat mac             显示 macOS 打包说明
-  build.bat clean           清理 dist / release 后完整打包 Windows
+  build.bat clean           清理 dist 与 release/<当前版本> 后完整打包 Windows
   build.bat help            显示本说明
+
+关于 MSI：运行时树约 25000 个文件，WiX 的 light 链接器要把每个文件编入数据库，
+实测需要十几分钟（I/O 受限）。因此默认打包不包含它；企业批量部署需要时再
+单独执行 build.bat msi。CI 里 MSI 也是独立一步。
 
 环境变量：
   SKIP_STAGE=1              跳过运行时准备（已 stage 过，可省数分钟）
@@ -177,8 +195,9 @@ DeepSeek Harness 桌面版 —— 打包
   Linux    AppImage / deb / rpm    需 Linux 或 CI
   macOS    dmg / zip               需 macOS 或 CI
 
-产物在 release\\ 目录。首次打包会下载 Electron、便携 Node 与
-@deepseek-ai/dsh（约 700 MB），需要网络；之后会复用缓存。
+产物在 release\<版本>\ 目录下（每个版本一个目录，文件名里不带版本号）。
+首次打包会下载 Electron、便携 Node 与 @deepseek-ai/dsh（约 700 MB），
+需要网络；之后会复用缓存。
 `)
 }
 
@@ -198,9 +217,12 @@ if (target === 'help' || target === '--help' || target === '-h') {
 }
 
 if (target === 'clean') {
-  console.log('[build] 清理 dist 与 release ...')
+  // 只清当前版本目录，不碰 release/ 整体：产物按版本归档，整目录删除会把
+  // 历史版本的安装包一起抹掉，那正是分目录要避免的事。
+  const current = version()
+  console.log(`[build] 清理 dist 与 release/${current} ...`)
   rmSync(join(ROOT, 'dist'), { recursive: true, force: true })
-  rmSync(join(ROOT, 'release'), { recursive: true, force: true })
+  rmSync(join(ROOT, 'release', current), { recursive: true, force: true })
   target = 'win'
 }
 
@@ -246,4 +268,4 @@ if (process.env.SKIP_STAGE !== '1') {
 
 runElectronBuilder(chosen.args, `打包 ${chosen.label}`)
 reportArtifacts()
-console.log('\n[build] 完成。产物目录: release\\')
+console.log(`\n[build] 完成。产物目录: release/${version()}/`)
