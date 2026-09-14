@@ -38,6 +38,34 @@ export interface ShellStrings {
   itemRuntimeVersion: string
   itemShellVersion: string
 
+  // 启动加载页（窗口先于服务端显示时用）
+  splashTitle: string
+  splashHint: string
+
+  // Project info window / git status
+  menuProject: string
+  itemProjectInfo: string
+  projectInfoTitle: string
+  projectWorkspace: string
+  projectGitBranch: string
+  projectGitNotARepo: string
+  projectGitDirty: string
+  projectGitClean: string
+  projectGitDetached: string
+  projectGitAhead: string
+  projectGitBehind: string
+  projectRuntimeVersion: string
+  projectRuntimeSource: string
+  projectRuntimeBundled: string
+  projectRuntimeDownloaded: string
+  projectElectron: string
+  projectNode: string
+  projectHarnessHome: string
+  projectUserData: string
+  projectWorkspaceHint: string
+  projectHarnessHomeHint: string
+  projectClose: string
+
   // Tray
   trayTooltip: string
   trayShow: string
@@ -103,6 +131,32 @@ const en: ShellStrings = {
   itemCheckUpdates: 'Check for Agent Runtime Updates…',
   itemRuntimeVersion: 'Agent runtime',
   itemShellVersion: 'Shell',
+
+  splashTitle: 'DeepSeek Harness',
+  splashHint: '正在启动智能体运行时…',
+
+  menuProject: 'Project',
+  itemProjectInfo: 'Project Info…',
+  projectInfoTitle: 'Project Info',
+  projectWorkspace: 'Workspace',
+  projectGitBranch: 'Git branch',
+  projectGitNotARepo: 'not a git repository',
+  projectGitDirty: 'uncommitted',
+  projectGitClean: 'clean',
+  projectGitDetached: 'detached HEAD',
+  projectGitAhead: 'ahead',
+  projectGitBehind: 'behind',
+  projectRuntimeVersion: 'Agent runtime',
+  projectRuntimeSource: 'Runtime source',
+  projectRuntimeBundled: 'bundled with the application',
+  projectRuntimeDownloaded: "downloaded update (this app's data directory)",
+  projectElectron: 'Electron',
+  projectNode: 'Bundled Node',
+  projectHarnessHome: 'Harness home',
+  projectUserData: 'App data',
+  projectWorkspaceHint: 'the directory the agent reads and writes',
+  projectHarnessHomeHint: 'sessions and credentials live here, separate from a CLI dsh install',
+  projectClose: 'Close',
 
   trayTooltip: 'DeepSeek Harness',
   trayShow: 'Open DeepSeek Harness',
@@ -171,6 +225,32 @@ const zh: ShellStrings = {
   itemCheckUpdates: '检查智能体运行时更新…',
   itemRuntimeVersion: '智能体运行时',
   itemShellVersion: '外壳',
+
+  splashTitle: 'DeepSeek Harness',
+  splashHint: '正在启动智能体运行时，首次启动可能需要十几秒…',
+
+  menuProject: '项目',
+  itemProjectInfo: '项目信息…',
+  projectInfoTitle: '项目信息',
+  projectWorkspace: '工作区',
+  projectGitBranch: 'Git 分支',
+  projectGitNotARepo: '不是 git 仓库',
+  projectGitDirty: '未提交',
+  projectGitClean: '干净',
+  projectGitDetached: '游离 HEAD',
+  projectGitAhead: '领先',
+  projectGitBehind: '落后',
+  projectRuntimeVersion: '智能体运行时',
+  projectRuntimeSource: '运行时来源',
+  projectRuntimeBundled: '随应用内置',
+  projectRuntimeDownloaded: '已下载的更新（位于本应用数据目录）',
+  projectElectron: 'Electron',
+  projectNode: '内置 Node',
+  projectHarnessHome: 'Harness 主目录',
+  projectUserData: '应用数据目录',
+  projectWorkspaceHint: '智能体读写的目录',
+  projectHarnessHomeHint: '会话与凭据存在这里，与命令行版 dsh 相互独立',
+  projectClose: '关闭',
 
   trayTooltip: 'DeepSeek Harness',
   trayShow: '打开 DeepSeek Harness',

@@ -15,9 +15,12 @@ import { BrowserWindow, Menu, Tray, app, dialog, ipcMain, nativeTheme, shell } f
 
 import { CredentialStore } from './credentials'
 import { DshServer } from './dsh-server'
+import { formatGitBadge, readGitInfo } from './git'
 import { format, initShellStrings, t } from './i18n'
+import { healModuleFallback } from './module-heal'
 import { resolveRuntime } from './paths'
 import type { RuntimeLocation } from './paths'
+import { showProjectInfo, type InfoRow } from './project-info'
 import { installCloseToTray, createTray } from './tray'
 import { RuntimeUpdater, locateNpmCli } from './updater'
 import { createMainWindow } from './window'
@@ -174,11 +177,49 @@ async function main(): Promise<void> {
     env: credentials.read(),
   })
 
+  // Repair module-fallback links before boot. If the install directory ever moved,
+  // dsh's own staleness check compares link *target strings*, so a dangling link can
+  // still look current — which surfaces as "Cannot find package '@deepseek-ai/…'"
+  // for every profile package. Checked on every start; a healthy home is a read-only
+  // scan, and the directory holds no user data (dsh rebuilds it).
+  const healed = healModuleFallback(dshHome)
+  if (healed.cleaned) {
+    process.stderr.write(
+      `[dsh-desktop] 修复了 ${healed.brokenLinks}/${healed.checkedLinks} 个失效的模块链接，` +
+        'dsh 将在本次启动时重建。\n',
+    )
+  } else if (healed.brokenLinks > 0) {
+    process.stderr.write(
+      `[dsh-desktop] 警告: 发现 ${healed.brokenLinks} 个失效模块链接但无法清理，启动可能失败。\n`,
+    )
+  }
+
   // Server output is valuable when diagnosing a failed boot, so keep it visible
   // during development and in the log file rather than swallowing it.
   server.on('log', ({ stream, line }: { stream: 'stdout' | 'stderr'; line: string }) => {
     if (!app.isPackaged || stream === 'stderr') process[stream].write(`${line}\n`)
   })
+
+  // Git status of the workspace: shown in the title bar and the Project Info
+  // panel. Read before the window so the title carries the branch from the start.
+  const gitInfo = await readGitInfo(workspace)
+  const gitBadge = formatGitBadge(gitInfo, '*')
+
+  // Create and show the window BEFORE waiting for the server.
+  //
+  // The dsh plugin tree takes ~10.7s to boot, which is ~95% of startup. Creating the
+  // window only after `server.start()` resolved meant the user stared at nothing for
+  // that whole time. Now the window (with a splash page) is up almost immediately and
+  // is navigated to the UI when the server announces its URL.
+  const iconPath = resolveIconPath(runtime.packaged)
+  const main = createMainWindow({
+    userDataDir,
+    ...(iconPath !== undefined ? { iconPath } : {}),
+    ...(gitBadge !== undefined ? { gitBadge } : {}),
+    splashTitle: strings.splashTitle,
+    splashHint: strings.splashHint,
+  })
+  const window = main.window
 
   let ready
   try {
@@ -199,6 +240,7 @@ async function main(): Promise<void> {
       app.exit(0)
       return
     }
+    main.close()
     dialog.showErrorBox(
       strings.startupFailedTitle,
       error instanceof Error ? error.message : String(error),
@@ -207,8 +249,8 @@ async function main(): Promise<void> {
     return
   }
 
-  const iconPath = resolveIconPath(runtime.packaged)
-  const window = createMainWindow(ready, userDataDir, iconPath)
+  // Hand the already-visible window over to the real UI.
+  await main.navigate(ready)
 
   const tray = createTray(iconPath, {
     show: () => {
@@ -220,6 +262,9 @@ async function main(): Promise<void> {
     },
     checkForUpdates: () => {
       void checkForRuntimeUpdate(updater, window)
+    },
+    projectInfo: () => {
+      showProjectInfoFor(window, workspace, dshHome, userDataDir, runtime, runtimeVersion, strings)
     },
     quit: () => {
       if (session !== undefined) session.quitting = true
@@ -234,7 +279,9 @@ async function main(): Promise<void> {
   })
 
   registerIpc(updater)
-  buildApplicationMenu(window, updater, runtimeVersion)
+  buildApplicationMenu(window, updater, runtimeVersion, () => {
+    showProjectInfoFor(window, workspace, dshHome, userDataDir, runtime, runtimeVersion, strings)
+  })
   session = { server, window, ...(tray !== undefined ? { tray } : {}), updater, quitting: false }
 
   // The shell track: report a newer installer when one is published.
@@ -265,6 +312,57 @@ async function restart(server: DshServer, window: BrowserWindow): Promise<void> 
   } catch (error) {
     dialog.showErrorBox(t().restartFailedTitle, error instanceof Error ? error.message : String(error))
   }
+}
+
+/**
+ * 打开「项目信息」面板，并在 git 探测返回后把数据推给面板。
+ *
+ * 面板先渲染、数据后到：git 探测要走子进程，阻塞在菜单点击上会让界面发顿。
+ * @param parent - 父窗口。
+ * @param workspace - 工作区路径。
+ * @param dshHome - Harness 主目录。
+ * @param userDataDir - 应用数据目录。
+ * @param runtime - 当前运行时位置。
+ * @param runtimeVersion - 当前运行时版本。
+ * @param strings - 已解析的本地化文案。
+ */
+function showProjectInfoFor(
+  parent: BrowserWindow,
+  workspace: string,
+  dshHome: string,
+  userDataDir: string,
+  runtime: RuntimeLocation,
+  runtimeVersion: string,
+  strings: ReturnType<typeof t>,
+): void {
+  const rows: InfoRow[] = [
+    { label: strings.projectWorkspace, value: workspace, hint: strings.projectWorkspaceHint },
+    { label: strings.projectRuntimeVersion, value: runtimeVersion },
+    {
+      label: strings.projectRuntimeSource,
+      value: runtime.dir.startsWith(join(userDataDir, 'runtime'))
+        ? strings.projectRuntimeDownloaded
+        : strings.projectRuntimeBundled,
+    },
+    { label: strings.projectNode, value: runtime.nodeVersion ?? process.version },
+    { label: strings.projectElectron, value: process.versions.electron ?? '—' },
+    { label: strings.projectHarnessHome, value: dshHome, hint: strings.projectHarnessHomeHint },
+    { label: strings.projectUserData, value: userDataDir },
+  ]
+
+  const info = showProjectInfo(parent, userDataDir, strings.projectInfoTitle, rows, {
+    title: strings.projectInfoTitle,
+    close: strings.projectClose,
+    notARepo: strings.projectGitNotARepo,
+    dirty: strings.projectGitDirty,
+    clean: strings.projectGitClean,
+    detached: strings.projectGitDetached,
+  })
+
+  void readGitInfo(workspace).then(
+    (git) => info.publish(git),
+    () => info.publish({ isRepo: false }),
+  )
 }
 
 /**
@@ -405,12 +503,19 @@ function registerIpc(updater: RuntimeUpdater): void {
 }
 
 /** Application menu, reduced to what a desktop shell should own. */
-function buildApplicationMenu(window: BrowserWindow, updater: RuntimeUpdater, runtimeVersion: string): void {
+function buildApplicationMenu(
+  window: BrowserWindow,
+  updater: RuntimeUpdater,
+  runtimeVersion: string,
+  openProjectInfo: () => void,
+): void {
   const s = t()
   const template: Electron.MenuItemConstructorOptions[] = [
     {
       label: s.menuFile,
       submenu: [
+        { label: s.itemProjectInfo, accelerator: 'CmdOrCtrl+I', click: openProjectInfo },
+        { type: 'separator' },
         { label: s.itemReload, role: 'reload' },
         { label: s.itemForceReload, role: 'forceReload' },
         { label: s.itemToggleDevTools, role: 'toggleDevTools' },

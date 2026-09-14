@@ -155,6 +155,25 @@ async function announceWhenAddressable(ctx, port) {
 }
 
 /**
+ * 启动阶段计时。
+ *
+ * 加它的原因：实测从进程启动到出现 URL 行要 11 秒以上，而内置 Node 冷启动只有
+ * 88ms、加载 host 半边只有 131ms——时间全在服务端启动里，但"服务端启动"是个
+ * 黑盒。把各阶段打出来，优化才有依据，而不是靠猜。
+ *
+ * 只在 DSH_DESKTOP_TIMING=1 时输出，避免污染正常日志。
+ */
+const TIMING = process.env.DSH_DESKTOP_TIMING === '1'
+const t0 = Date.now()
+let lastMark = t0
+function mark(label) {
+  if (!TIMING) return
+  const now = Date.now()
+  console.error(`[timing] ${String(now - lastMark).padStart(6)} ms  (+${String(now - t0).padStart(6)})  ${label}`)
+  lastMark = now
+}
+
+/**
  * Boot the desktop profile and never resolve while the app is alive.
  * @returns a promise that settles only if boot fails.
  */
@@ -163,26 +182,31 @@ async function main() {
   const home = resolve(options.dshHome)
   const workspace = resolve(options.workspace)
   const installAnchor = resolve(options.installAnchor)
+  mark('参数解析')
 
   mkdirSync(workspace, { recursive: true })
   process.chdir(workspace)
 
   const profileDir = ensureProfile(home)
   const profile = loadProfileDirectory(BIN_NAME, profileDir, installAnchor)
+  mark(`profile 装载（${profile.layers.length} 个 bundle 层）`)
 
   // Link the installation's dependency closure into $DSH_HOME/profiles/node_modules
   // and reconcile the profile-local links. This is what makes the bundled runtime
   // self-sufficient; it also means a newly swapped runtime needs no reinstall.
   await healProfilesModuleFallback({ installAnchor, profile, home })
+  mark('模块回退链接')
 
   const patches = [
     ...profile.layers.flatMap((layer) => layer.patches),
     ...profile.patches,
     ...(loadOptionalPatches(BIN_NAME, join(home, PROFILE_PATCH_FILENAME)) ?? []),
   ]
+  mark(`patch 合成（${patches.length} 条）`)
 
   const environment = loadLayeredEnv(BIN_NAME)
   installFailLoud(BIN_NAME, process, () => {})
+  mark('环境快照')
 
   const ctx = await boot(BIN_NAME, join(profile.dir, PROFILE_ROOT_FILENAME), patches, (hostCtx) => {
     hostCtx.provide(DSH_LAUNCH_ENVIRONMENT_KEY, environment)
@@ -194,11 +218,13 @@ async function main() {
       ready: { onReady: () => () => {} },
     })
   })
+  mark('boot 插件树')
 
   const port = ctx.get('webServer')?.port
   if (port === undefined) throw new Error(`${BIN_NAME}: web server did not start`)
 
   await announceWhenAddressable(ctx, port)
+  mark('等待 web 可访问')
 
   // Keep the process alive; the mounted plugins own process lifetime.
   await new Promise(() => {})

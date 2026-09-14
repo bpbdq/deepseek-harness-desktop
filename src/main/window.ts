@@ -1,12 +1,16 @@
 /**
- * BrowserWindow that hosts the official dsh Web UI.
+ * BrowserWindow 及其"先显示、后就绪"的启动编排。
  *
- * Authentication handshake, taken from the dsh browser-trust design:
- *   dsh-web-app prints `http://127.0.0.1:<port>/?token=<launch-token>`. The server
- *   accepts that token only on `GET /`, writes an authority-bound signed HttpOnly
- *   cookie, and redirects to a clean `/`. So the window loads the token URL exactly
- *   once; every later request (including the /api WebSocket) rides the cookie and
- *   the URL bar never keeps the token.
+ * 为什么窗口要先于服务端创建：
+ *   DSH 的插件树 boot 实测要 ~10.7 秒（占启动总时长约 95%）。此前窗口是在
+ *   `await server.start()` **之后**才创建的，用户要对着空屏幕等十几秒，主观上
+ *   就是"启动特别慢"。改成先创建窗口并显示一个品牌化的加载页，等服务端就绪后
+ *   再导航过去——总时长没变，但用户立刻有反馈。
+ *
+ * 认证握手（来自 dsh 的浏览器信任设计）：
+ *   dsh-web-app 打印 `http://127.0.0.1:<port>/?token=<launch-token>`。服务端只在
+ *   `GET /` 上接受该 token，用它写入绑定 authority 的 HttpOnly Cookie，然后 302 到
+ *   干净的 `/`。所以窗口只加载一次带 token 的 URL，地址栏不会长期保留凭据。
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -23,11 +27,52 @@ interface WindowState {
 
 const DEFAULT_STATE: WindowState = { width: 1440, height: 920 }
 
+/** 加载页最多显示多久——即使 ready-to-show 不触发也要把窗口亮出来。 */
+const SPLASH_FALLBACK_SHOW_MS = 2500
+
 /**
- * Read persisted window geometry.
- * @param userDataDir - Electron's per-user data directory.
- * @returns the stored state, or defaults.
+ * 加载页的 HTML。
+ *
+ * 用临时文件而不是 data: URI —— 页面里有中文，data URI 需要 URL 编码，而 HTML
+ * 又是 JS 模板拼的，两层转义极易出错（这个项目里中文编码已经踩过两次）。
+ * @param title - 页面主标题。
+ * @param hint - 次要提示文案。
+ * @returns 完整 HTML 文档。
  */
+function splashHtml(title: string, hint: string): string {
+  return `<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>${title}</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 18px;
+    background: #1b1b1f; color: #e8e8ea;
+    font: 14px/1.6 -apple-system, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    user-select: none; -webkit-user-select: none;
+  }
+  .mark { display: flex; align-items: center; gap: 10px; opacity: .95; }
+  .dot {
+    width: 10px; height: 10px; border-radius: 50%;
+    background: #4d8dff; animation: pulse 1.1s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%,100% { opacity: .35; transform: scale(.85) } 50% { opacity: 1; transform: scale(1) } }
+  h1 { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: .2px; }
+  .hint { color: #8a8a93; font-size: 12.5px; }
+</style>
+</head>
+<body>
+  <div class="mark"><span class="dot"></span><h1>${title}</h1></div>
+  <div class="hint">${hint}</div>
+</body>
+</html>`
+}
+
+/** 读取持久化的窗口几何。 */
 function loadState(userDataDir: string): WindowState {
   const path = join(userDataDir, 'window-state.json')
   if (!existsSync(path)) return { ...DEFAULT_STATE }
@@ -45,20 +90,34 @@ function loadState(userDataDir: string): WindowState {
   }
 }
 
+/** 创建主窗口所需的配置。 */
+export interface MainWindowOptions {
+  /** Electron 的每用户数据目录。 */
+  userDataDir: string
+  /** 应用图标路径（存在时）。 */
+  iconPath?: string
+  /** 标题栏上的 git 徽章，如 `master*`。 */
+  gitBadge?: string
+  /** 加载页主标题。 */
+  splashTitle: string
+  /** 加载页提示文案。 */
+  splashHint: string
+}
+
 /**
- * Create the main window and load the authenticated URL.
- * @param ready - the server readiness announcement.
- * @param userDataDir - Electron's per-user data directory.
- * @param iconPath - absolute path of the app icon, when one exists.
- * @returns the created window.
+ * 立刻创建并显示窗口（加载页），并返回服务端就绪后用于导航的控制器。
+ * @param options - 窗口与加载页配置。
+ * @returns 窗口对象与 `navigate` / `close` 控制方法。
  */
-export function createMainWindow(
-  ready: ServerReady,
-  userDataDir: string,
-  iconPath: string | undefined,
-): BrowserWindow {
+export function createMainWindow(options: MainWindowOptions): {
+  window: BrowserWindow
+  navigate: (ready: ServerReady) => Promise<void>
+  close: () => void
+} {
+  const { userDataDir, iconPath, gitBadge, splashTitle, splashHint } = options
   const state = loadState(userDataDir)
-  const options: BrowserWindowConstructorOptions = {
+
+  const constructorOptions: BrowserWindowConstructorOptions = {
     width: state.width,
     height: state.height,
     ...(state.x !== undefined && state.y !== undefined ? { x: state.x, y: state.y } : {}),
@@ -66,15 +125,14 @@ export function createMainWindow(
     minHeight: 600,
     show: false,
     backgroundColor: '#1b1b1f',
-    // The menu bar carries the only user-reachable "check for updates" action, so
-    // it must stay visible. `autoHideMenuBar: true` hides it behind an Alt press,
-    // which makes every menu entry effectively undiscoverable.
+    // 菜单栏承载着唯一用户可达的"检查更新"入口，必须常显。
+    // autoHideMenuBar: true 会把它藏到 Alt 之后，等于让所有菜单项不可发现。
     autoHideMenuBar: false,
     title: 'DeepSeek Harness',
     ...(iconPath !== undefined ? { icon: iconPath } : {}),
     webPreferences: {
-      // The UI is the official web build served over loopback. It needs no
-      // Node access, so keep the renderer fully sandboxed.
+      // UI 是经 loopback 提供的官方 Web 构建，不需要 Node 能力，
+      // 因此渲染进程保持完全沙箱化。
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
@@ -83,34 +141,69 @@ export function createMainWindow(
     },
   }
 
-  const window = new BrowserWindow(options)
+  const window = new BrowserWindow(constructorOptions)
 
-  // The whole UI is one origin on loopback. Anything else opens in the real
-  // browser instead of navigating the shell away from the app.
-  const origin = new URL(ready.url).origin
+  // 先显示加载页，让窗口立刻可见。
+  const splashPath = join(userDataDir, 'splash.html')
+  try {
+    writeFileSync(splashPath, splashHtml(splashTitle, splashHint), 'utf8')
+    void window.loadFile(splashPath)
+  } catch {
+    // 写不了就退化成空白窗口，不影响后续导航。
+  }
+
+  let shown = false
+  const show = (): void => {
+    if (shown || window.isDestroyed()) return
+    shown = true
+    if (state.maximized === true) window.maximize()
+    window.show()
+  }
+  window.once('ready-to-show', show)
+  // 兜底：ready-to-show 在个别情况下不触发，不能让窗口永远藏着。
+  setTimeout(show, SPLASH_FALLBACK_SHOW_MS)
+
+  // 整个 UI 都在 loopback 的同一 origin 上，其它地址交给系统浏览器，
+  // 而不是让外壳导航离开应用。
+  let origin: string | undefined
   window.webContents.setWindowOpenHandler(({ url }) => {
-    if (!url.startsWith(origin)) void shell.openExternal(url)
+    if (origin === undefined || !url.startsWith(origin)) void shell.openExternal(url)
     return { action: 'deny' }
   })
   window.webContents.on('will-navigate', (event, url) => {
-    if (!url.startsWith(origin)) {
+    if (origin !== undefined && !url.startsWith(origin)) {
       event.preventDefault()
       void shell.openExternal(url)
     }
   })
 
-  if (state.maximized === true) window.maximize()
-  window.once('ready-to-show', () => window.show())
+  // 网页 UI 会自己设置 document.title，导航后要把带 git 徽章的标题重新压回去，
+  // 否则每次跳转都会把分支信息冲掉。
+  const baseTitle = 'DeepSeek Harness'
+  const title = gitBadge === undefined ? baseTitle : `${baseTitle} — ${gitBadge}`
+  window.setTitle(title)
+  window.on('page-title-updated', (event) => {
+    event.preventDefault()
+    window.setTitle(title)
+  })
 
   window.on('close', () => persist(window, userDataDir))
 
-  // The token URL is loaded once and 302s to the cookie-authenticated clean root.
-  void window.loadURL(ready.authenticatedUrl)
-
-  return window
+  return {
+    window,
+    navigate: async (ready: ServerReady): Promise<void> => {
+      origin = new URL(ready.url).origin
+      // 带 token 的 URL 只加载一次，随后服务端会 302 到凭 Cookie 认证的干净根路径。
+      await window.loadURL(ready.authenticatedUrl)
+      show()
+    },
+    close: (): void => {
+      if (!window.isDestroyed()) window.destroy()
+    },
+  }
 }
 
-/** Persist geometry so the next launch restores it. */
+/** 持久化窗口几何，下次启动还原。 */
 function persist(window: BrowserWindow, userDataDir: string): void {
   try {
     const maximized = window.isMaximized()
@@ -124,6 +217,6 @@ function persist(window: BrowserWindow, userDataDir: string): void {
     }
     writeFileSync(join(userDataDir, 'window-state.json'), JSON.stringify(state, null, 2) + '\n')
   } catch {
-    // Geometry is best-effort; never block shutdown on it.
+    // 几何信息是尽力而为，不能因为它阻塞关闭流程。
   }
 }
