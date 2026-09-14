@@ -272,12 +272,31 @@ jobs:
           merge-multiple: true
 
       - name: 列出将要发布的文件
-        run: ls -laR artifacts | head -40
+        run: ls -laR artifacts | head -60
+
+      # 显式校验"确实有可发布的产物"，否则直接失败。
+      #
+      # 为什么需要：上一版用的是 `files: artifacts/*`，而 upload-artifact 会把文件
+      # 放进**子目录**（产物在 release/<版本>/ 下，上传时该层级被保留）。于是
+      # artifacts/* 一个文件都匹配不到，而 softprops/action-gh-release 对空匹配
+      # **不报错**——结果是 Release 正常发布、里面却只有 GitHub 自动附带的源码包。
+      # 这种"成功但为空"的失败最难发现，所以在这里挡掉。
+      - name: 确认产物存在
+        run: |
+          count=$(find artifacts -type f \( -name '*.exe' -o -name '*.msi' -o -name '*.dmg' -o -name '*.zip' -o -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' -o -name '*.blockmap' -o -name 'latest*.yml' \) | wc -l)
+          echo "找到 $count 个可发布文件"
+          find artifacts -type f | head -40
+          if [ "$count" -eq 0 ]; then
+            echo "::error::没有可发布的产物——检查 download-artifact 的结果与 files 的 glob"
+            exit 1
+          fi
 
       - name: 发布
         uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/*
+          # 必须用 `**` 递归匹配：产物位于 artifacts/<版本>/ 子目录下，
+          # `artifacts/*` 只匹配顶层，会静默产生一个没有附件的 Release。
+          files: artifacts/**/*
           # draft: false —— 直接发布。
           #
           # 这里曾是 true，导致 Releases 页面**什么都看不到**：GitHub 只展示已发布
