@@ -82,9 +82,13 @@ jobs:
         shell: bash
         run: |
           set -e
-          # macOS 打包必须由 build/icon.png 生成 .icns，缺了或坏了会直接失败。
-          # 只做校验，不重新生成：build/icon.png 是入库的正式资源，由
-          # `npm run icon` 覆盖它会把有意的品牌图悄悄换回占位图。
+          # 尺寸下限是硬性的，而且各平台要求不同：
+          #   * macOS 拒绝小于 512x512 的源图
+          #     （报错："cannot convert icon … must be at least 512x512"）
+          #   * Windows 的 .ico 需要多个尺寸，源图太小会被放大而模糊
+          # 因此这里要求 >= 512，而不是想当然的 256。
+          # 只校验、不重新生成：build/icon.png 是入库的正式资源，
+          # 用 `npm run icon` 覆盖它会把有意的品牌图悄悄换回占位图。
           test -f build/icon.png || { echo "::error::build/icon.png 缺失（它必须入库）"; exit 1; }
           node -e "
             const fs = require('node:fs')
@@ -94,9 +98,12 @@ jobs:
             const width = b.readUInt32BE(16)
             const height = b.readUInt32BE(20)
             console.log('icon.png', width + 'x' + height, b.length + ' bytes')
-            if (width < 256 || height < 256) { console.error('::error::图标至少需要 256x256'); process.exit(1) }
+            if (width < 512 || height < 512) {
+              console.error('::error::图标至少需要 512x512（macOS 打包的硬性要求）')
+              process.exit(1)
+            }
           "
-          # macOS 的 .icns 由 electron-builder 从这张 PNG 派生，不需要额外工具。
+          # .icns 与 .ico 都由 electron-builder 从这张 PNG 派生，不需要额外工具。
 
       - name: 准备内置运行时与便携 Node
         run: npm run stage

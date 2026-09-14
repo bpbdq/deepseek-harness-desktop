@@ -1,4 +1,14 @@
-// Build-machine helper: generate build/icon.png (256x256) with no image libraries.
+// Build-machine helper: generate build/icon.png with no image libraries.
+//
+// 尺寸是有硬性下限的，不是随便选的：
+//   * macOS 打包拒绝小于 512x512 的源图
+//     （electron-builder: "cannot convert icon … must be at least 512x512"）
+//   * Windows 的 .ico 需要多个尺寸，源图太小时会被放大而模糊
+// 因此默认输出 1024x1024。
+//
+// 用法：
+//   node scripts/generate-icon.mjs           1024x1024
+//   node scripts/generate-icon.mjs 512       指定边长
 //
 // The mark echoes the harness idea: a bracket frame around a node graph.
 // Replace build/icon.png with real branding before shipping a release.
@@ -6,7 +16,15 @@ import { deflateSync } from 'node:zlib'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 
-const SIZE = 256
+/** 设计基准尺寸：所有坐标都按这个尺寸书写，再按比例缩放到 SIZE。 */
+const DESIGN = 256
+const SIZE = Number(process.argv[2] ?? 1024)
+if (!Number.isFinite(SIZE) || SIZE < 256) {
+  console.error('边长至少 256；macOS 打包要求源图不小于 512')
+  process.exit(1)
+}
+/** 设计坐标 -> 实际像素的比例。 */
+const S = SIZE / DESIGN
 const ROOT = resolve(import.meta.dirname, '..')
 const OUT_DIR = join(ROOT, 'build')
 
@@ -71,20 +89,24 @@ const INK = [232, 232, 234]
 const ACCENT = [77, 141, 255]
 const DEEP = [27, 27, 31]
 
+// 所有坐标都在 DESIGN(=256) 的设计空间里书写，再乘 S 缩放到实际尺寸。
+// 这样改尺寸不会牵动绘图逻辑，也让"设计意图"与"输出分辨率"分开。
+const px = (v) => v * S
+
 // Rounded square plate.
-roundedFrame(18, 18, SIZE - 18, SIZE - 18, 46, 14, DEEP, 1)
-roundedFrame(18, 18, SIZE - 18, SIZE - 18, 46, 4, ACCENT, 0.95)
+roundedFrame(px(18), px(18), px(DESIGN - 18), px(DESIGN - 18), px(46), px(14), DEEP, 1)
+roundedFrame(px(18), px(18), px(DESIGN - 18), px(DESIGN - 18), px(46), px(4), ACCENT, 0.95)
 
 // Harness node graph: two left nodes feeding one right node.
-const left = [86, 112]
-const mid = [86, 144]
-const right = [170, 128]
-line(left[0], left[1], right[0], right[1], 7, INK, 0.9)
-line(mid[0], mid[1], right[0], right[1], 7, INK, 0.9)
-line(left[0], left[1], mid[0], mid[1], 5, INK, 0.35)
-disc(left[0], left[1], 15, INK)
-disc(mid[0], mid[1], 15, INK)
-disc(right[0], right[1], 21, ACCENT)
+const left = [px(86), px(112)]
+const mid = [px(86), px(144)]
+const right = [px(170), px(128)]
+line(left[0], left[1], right[0], right[1], px(7), INK, 0.9)
+line(mid[0], mid[1], right[0], right[1], px(7), INK, 0.9)
+line(left[0], left[1], mid[0], mid[1], px(5), INK, 0.35)
+disc(left[0], left[1], px(15), INK)
+disc(mid[0], mid[1], px(15), INK)
+disc(right[0], right[1], px(21), ACCENT)
 
 /** Encode the canvas as a PNG. */
 function encodePng() {
