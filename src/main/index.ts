@@ -8,10 +8,9 @@
  * The heavy lifting (sandboxing, tools, sessions, jobs, subagents) all happens in
  * the child; this process is a shell and never runs agent code.
  */
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
-import { homedir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
-import { BrowserWindow, Menu, Tray, app, dialog, ipcMain, nativeTheme, shell } from 'electron'
+import { existsSync, mkdirSync, readFileSync } from 'node:fs'
+import { join, resolve } from 'node:path'
+import { BrowserWindow, Menu, Tray, app, clipboard, dialog, ipcMain, nativeTheme, shell } from 'electron'
 
 import { CredentialStore } from './credentials'
 import { DshServer } from './dsh-server'
@@ -21,9 +20,11 @@ import { healModuleFallback } from './module-heal'
 import { resolveRuntime } from './paths'
 import type { RuntimeLocation } from './paths'
 import { showProjectInfo, type InfoRow } from './project-info'
+import { readSettings, switchWorkspace } from './settings'
 import { installCloseToTray, createTray } from './tray'
 import { RuntimeUpdater, locateNpmCli } from './updater'
 import { createMainWindow } from './window'
+import { fallbackWorkspace, normalizeWorkspaceArgument, recentLabels, removeSplashFile } from './workspace'
 
 const SHELL_VERSION: string = (() => {
   try {
@@ -33,12 +34,6 @@ const SHELL_VERSION: string = (() => {
     return '0.0.0'
   }
 })()
-
-interface DesktopSettings {
-  workspace?: string
-  /** dist-tag the runtime updater follows: latest | next | alpha. */
-  channel?: string
-}
 
 /** Populated during startup, read by the shutdown path. */
 interface Session {
@@ -76,47 +71,29 @@ if (!app.requestSingleInstanceLock()) {
   void main()
 }
 
-/** Read (and cache) the app's own settings file. */
-function readSettings(userDataDir: string): DesktopSettings {
-  try {
-    return JSON.parse(readFileSync(join(userDataDir, 'settings.json'), 'utf8')) as DesktopSettings
-  } catch {
-    return {}
-  }
-}
-
-/** Merge keys into the settings file. */
-function writeSettings(userDataDir: string, patch: DesktopSettings): void {
-  const next = { ...readSettings(userDataDir), ...patch }
-  mkdirSync(userDataDir, { recursive: true })
-  writeFileSync(join(userDataDir, 'settings.json'), JSON.stringify(next, null, 2) + '\n')
-}
-
 /**
- * Decide which directory the agent treats as its workspace.
+ * 决定智能体把哪个目录当作工作区。
  *
- * Precedence: explicit CLI argument > remembered choice > home directory. The
- * dsh launcher treats the invoking directory as the default workspace root, so
- * mirroring that keeps behaviour familiar.
- * @param argv - `process.argv` of this launch.
- * @param userDataDir - Electron's per-user data directory.
- * @returns the absolute workspace path.
+ * 优先级：命令行显式参数 > 上次记住的选择 > 用户主目录。dsh 的启动器把"调用时
+ * 所在目录"当作默认工作区根，这里保持同样的直觉。
+ * @param argv - 本次启动的 `process.argv`。
+ * @param userDataDir - Electron 的每用户数据目录。
+ * @returns 工作区绝对路径。
  */
 function resolveWorkspace(argv: string[], userDataDir: string): string {
-  const fromArgv = argv
-    .slice(1)
-    .find((token) => !token.startsWith('--') && !token.startsWith('-'))
+  const fromArgv = argv.slice(1).find((token) => !token.startsWith('--') && !token.startsWith('-'))
   if (fromArgv !== undefined) {
-    const absolute = resolve(fromArgv)
-    if (existsSync(absolute)) {
-      const target = statSync(absolute).isDirectory() ? absolute : dirname(absolute)
-      writeSettings(userDataDir, { workspace: target })
-      return target
+    const normalized = normalizeWorkspaceArgument(fromArgv)
+    if (normalized !== undefined) {
+      // 走 switchWorkspace 而不是只写 workspace：命令行打开一个目录同样应当
+      // 进入"最近打开"列表。
+      switchWorkspace(userDataDir, normalized)
+      return normalized
     }
   }
   const remembered = readSettings(userDataDir).workspace
   if (remembered !== undefined && existsSync(remembered)) return remembered
-  return homedir()
+  return fallbackWorkspace()
 }
 
 /** Launch, wire, and supervise the whole application. */
@@ -221,6 +198,21 @@ async function main(): Promise<void> {
   })
   const window = main.window
 
+  // 纯菜单诊断：菜单不依赖服务端，而启动服务端要 ~11 秒。以
+  // DSH_DESKTOP_DUMP_MENU=1 启动时，构建完菜单就直接退出，让菜单可以被脚本
+  // 快速断言，而不是每次等十几秒。
+  if (process.env.DSH_DESKTOP_DUMP_MENU === '1') {
+    buildApplicationMenu(
+      window,
+      updater,
+      runtimeVersion,
+      () => {},
+      createWorkspaceActions({ window, workspace, userDataDir, server, strings }),
+    )
+    app.exit(0)
+    return
+  }
+
   let ready
   try {
     ready = await server.start()
@@ -279,9 +271,15 @@ async function main(): Promise<void> {
   })
 
   registerIpc(updater)
-  buildApplicationMenu(window, updater, runtimeVersion, () => {
-    showProjectInfoFor(window, workspace, dshHome, userDataDir, runtime, runtimeVersion, strings)
-  })
+  buildApplicationMenu(
+    window,
+    updater,
+    runtimeVersion,
+    () => {
+      showProjectInfoFor(window, workspace, dshHome, userDataDir, runtime, runtimeVersion, strings)
+    },
+    createWorkspaceActions({ window, workspace, userDataDir, server, strings }),
+  )
   session = { server, window, ...(tray !== undefined ? { tray } : {}), updater, quitting: false }
 
   // The shell track: report a newer installer when one is published.
@@ -291,12 +289,95 @@ async function main(): Promise<void> {
     if (session !== undefined) session.quitting = true
   })
   app.on('will-quit', () => {
+    removeSplashFile(userDataDir)
     void server.stop()
   })
   // With a tray the app outlives its windows on purpose.
   app.on('window-all-closed', () => {
     if (session?.tray === undefined) app.quit()
   })
+}
+
+/**
+ * 构造文件菜单里工作区相关动作的实现。
+ *
+ * 关键取舍：切换工作区**重启整个应用**，而不是原地换掉子进程的 `--workspace`。
+ * 原因：
+ *   * 工作区是在服务端启动时传入的，中途更换意味着要重建整棵插件树（约 11 秒），
+ *     而重启走的是同一条已验证的启动路径，出问题的面更小；
+ *   * 只有一条启动路径，不存在"半个进程还在用旧工作区"的中间态；
+ *   * 会话已持久化，重启后可继续。
+ *
+ * @param deps - 需要的窗口、当前工作区、数据目录、服务端与文案。
+ * @returns 菜单动作集合。
+ */
+function createWorkspaceActions(deps: {
+  window: BrowserWindow
+  workspace: string
+  userDataDir: string
+  server: DshServer
+  strings: ReturnType<typeof t>
+}): WorkspaceActions {
+  const { window, workspace, userDataDir, server, strings } = deps
+  const s = strings
+
+  /** 记录并重启到新的工作区。 */
+  const applyWorkspace = (dir: string): void => {
+    switchWorkspace(userDataDir, dir)
+    if (session !== undefined) session.quitting = true
+    // 先停子进程再重启，避免重启瞬间两个服务端争用同一个 harness home。
+    void server.stop(2000).finally(() => {
+      app.relaunch()
+      app.exit(0)
+    })
+  }
+
+  const recent = recentLabels(readSettings(userDataDir).recent ?? [])
+
+  return {
+    recent: recent.map((label, index) => ({
+      label,
+      path: (readSettings(userDataDir).recent ?? [])[index] ?? '',
+    })),
+    openFolder: (): void => {
+      const picked = dialog.showOpenDialogSync(window, {
+        title: s.dialogOpenFolderTitle,
+        buttonLabel: s.dialogOpenFolderButton,
+        properties: ['openDirectory', 'createDirectory'],
+      })
+      const dir = picked?.[0]
+      if (dir === undefined) return
+
+      // 明确告知会重启，而不是默默把界面刷掉——重启是这里唯一可感知的副作用。
+      const confirmation = dialog.showMessageBoxSync(window, {
+        type: 'question',
+        title: s.switchWorkspaceTitle,
+        message: s.switchWorkspaceMessage,
+        detail: `${dir}\n\n${s.switchWorkspaceDetail}`,
+        buttons: [s.switchWorkspaceConfirm, s.switchWorkspaceCancel],
+        defaultId: 0,
+        cancelId: 1,
+      })
+      if (confirmation !== 0) return
+      applyWorkspace(dir)
+    },
+    openRecent: (dir: string): void => {
+      if (dir === '' || dir === workspace) return
+      applyWorkspace(dir)
+    },
+    revealWorkspace: (): void => {
+      void shell.openPath(workspace)
+    },
+    copyWorkspacePath: (): void => {
+      clipboard.writeText(workspace)
+      dialog.showMessageBox(window, {
+        type: 'info',
+        message: s.copiedPathTitle,
+        detail: `${workspace}\n\n${s.copiedPathMessage}`,
+        buttons: [s.buttonOk],
+      })
+    },
+  }
 }
 
 /**
@@ -502,19 +583,51 @@ function registerIpc(updater: RuntimeUpdater): void {
   })
 }
 
+/** 文件菜单里与工作区（项目）相关的动作。 */
+export interface WorkspaceActions {  /** 弹出目录选择器，切换工作区。 */
+  openFolder: () => void
+  /** 切到某个最近打开过的目录。 */
+  openRecent: (dir: string) => void
+  /** 在系统文件管理器中打开当前工作区。 */
+  revealWorkspace: () => void
+  /** 复制当前工作区路径到剪贴板。 */
+  copyWorkspacePath: () => void
+  /** 菜单里"最近打开"的条目（已解析为可显示文案）。 */
+  recent: Array<{ label: string; path: string }>
+}
+
 /** Application menu, reduced to what a desktop shell should own. */
 function buildApplicationMenu(
   window: BrowserWindow,
   updater: RuntimeUpdater,
   runtimeVersion: string,
   openProjectInfo: () => void,
+  workspaceActions: WorkspaceActions,
 ): void {
   const s = t()
   const template: Electron.MenuItemConstructorOptions[] = [
     {
       label: s.menuFile,
       submenu: [
+        { label: s.itemOpenFolder, accelerator: 'CmdOrCtrl+O', click: workspaceActions.openFolder },
+        {
+          label: s.itemOpenRecent,
+          submenu:
+            workspaceActions.recent.length === 0
+              ? [{ label: s.itemNoRecent, enabled: false }]
+              : workspaceActions.recent.map((entry) => ({
+                  label: entry.label,
+                  toolTip: entry.path,
+                  click: () => workspaceActions.openRecent(entry.path),
+                })),
+        },
+        { type: 'separator' },
         { label: s.itemProjectInfo, accelerator: 'CmdOrCtrl+I', click: openProjectInfo },
+        {
+          label: s.itemRevealWorkspace,
+          click: workspaceActions.revealWorkspace,
+        },
+        { label: s.itemCopyWorkspacePath, click: workspaceActions.copyWorkspacePath },
         { type: 'separator' },
         { label: s.itemReload, role: 'reload' },
         { label: s.itemForceReload, role: 'forceReload' },
@@ -571,6 +684,27 @@ function buildApplicationMenu(
     },
   ]
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+
+  // 诊断开关：DSH_DESKTOP_DUMP_MENU=1 时把菜单结构打到 stderr。
+  //
+  // 存在的理由：菜单在主进程里，渲染进程的 CDP 读不到；而没有可读的输出，
+  // "菜单改对了吗"就只能靠人肉截图去猜。有了它，菜单结构可以被脚本断言。
+  if (process.env.DSH_DESKTOP_DUMP_MENU === '1') {
+    const dump = (items: Electron.MenuItemConstructorOptions[], indent = ''): string =>
+      items
+        .map((item) => {
+          const label = item.label ?? (item.role === undefined ? '(分隔)' : `role=${item.role}`)
+          const accel = item.accelerator === undefined ? '' : `  [${item.accelerator}]`
+          const disabled = item.enabled === false ? '  (禁用)' : ''
+          const head = `${indent}${label}${accel}${disabled}`
+          const children = Array.isArray(item.submenu)
+            ? '\n' + dump(item.submenu as Electron.MenuItemConstructorOptions[], `${indent}    `)
+            : ''
+          return head + children
+        })
+        .join('\n')
+    process.stderr.write(`[menu]\n${dump(template)}\n[/menu]\n`)
+  }
 }
 
 /** Best-effort shell self-update; never blocks startup. */

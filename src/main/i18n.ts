@@ -42,6 +42,23 @@ export interface ShellStrings {
   splashTitle: string
   splashHint: string
 
+  // 工作区 / 最近项目
+  itemOpenFolder: string
+  itemOpenRecent: string
+  itemNoRecent: string
+  itemRevealWorkspace: string
+  itemCopyWorkspacePath: string
+  dialogOpenFolderTitle: string
+  dialogOpenFolderButton: string
+  switchWorkspaceTitle: string
+  switchWorkspaceMessage: string
+  switchWorkspaceDetail: string
+  switchWorkspaceConfirm: string
+  switchWorkspaceCancel: string
+  openFolderFailedTitle: string
+  copiedPathTitle: string
+  copiedPathMessage: string
+
   // Project info window / git status
   menuProject: string
   itemProjectInfo: string
@@ -133,7 +150,24 @@ const en: ShellStrings = {
   itemShellVersion: 'Shell',
 
   splashTitle: 'DeepSeek Harness',
-  splashHint: '正在启动智能体运行时…',
+  splashHint: 'Starting the agent runtime…',
+
+  itemOpenFolder: 'Open Folder…',
+  itemOpenRecent: 'Open Recent',
+  itemNoRecent: 'No recent folders',
+  itemRevealWorkspace: 'Reveal Workspace in Explorer',
+  itemCopyWorkspacePath: 'Copy Workspace Path',
+  dialogOpenFolderTitle: 'Choose a project folder to open',
+  dialogOpenFolderButton: 'Open',
+  switchWorkspaceTitle: 'Switch project',
+  switchWorkspaceMessage: 'Open this folder as the workspace?',
+  switchWorkspaceDetail:
+    'The agent reads and writes inside the workspace. Switching restarts the agent runtime; the current session stays on disk and can be resumed.',
+  switchWorkspaceConfirm: 'Open Folder',
+  switchWorkspaceCancel: 'Cancel',
+  openFolderFailedTitle: 'Could not open the folder',
+  copiedPathTitle: 'Path copied',
+  copiedPathMessage: 'The workspace path is on the clipboard.',
 
   menuProject: 'Project',
   itemProjectInfo: 'Project Info…',
@@ -228,6 +262,23 @@ const zh: ShellStrings = {
 
   splashTitle: 'DeepSeek Harness',
   splashHint: '正在启动智能体运行时，首次启动可能需要十几秒…',
+
+  itemOpenFolder: '打开文件夹…',
+  itemOpenRecent: '最近打开',
+  itemNoRecent: '暂无最近打开的项目',
+  itemRevealWorkspace: '在文件管理器中打开工作区',
+  itemCopyWorkspacePath: '复制工作区路径',
+  dialogOpenFolderTitle: '选择要打开的项目文件夹',
+  dialogOpenFolderButton: '打开',
+  switchWorkspaceTitle: '切换项目',
+  switchWorkspaceMessage: '把这个文件夹作为工作区打开？',
+  switchWorkspaceDetail:
+    '智能体只在这个工作区内读写。切换会重启智能体运行时；当前会话已存盘，之后仍可恢复。',
+  switchWorkspaceConfirm: '打开文件夹',
+  switchWorkspaceCancel: '取消',
+  openFolderFailedTitle: '无法打开该文件夹',
+  copiedPathTitle: '路径已复制',
+  copiedPathMessage: '工作区路径已放入剪贴板。',
 
   menuProject: '项目',
   itemProjectInfo: '项目信息…',
