@@ -3,13 +3,18 @@ productName: DeepSeek Harness
 copyright: MIT Licensed — bundles the official DeepSeek Harness runtime
 
 directories:
-  output: release
+  # 每个版本一个目录：release/1.0.0/…，产物文件名里不再带版本号。
+  # 依据：`appInfo` 带有 `version` 字段（app-builder-lib 的 AppInfo 构造函数），
+  # 而 macroExpander 的最后分支就是 `if (p1 in appInfo) return appInfo[p1]`，
+  # 所以 output 里用 ${version} 是合法宏。
+  output: release/${version}
   buildResources: build
 
-# `compression` is a top-level option, not an nsis/msi child. The bundled runtime
-# is hundreds of MB of JSON and JS, which deflates well, so the slower maximum
-# setting buys a substantially smaller installer.
-compression: maximum
+# `compression` is a top-level option, not an nsis/msi child. Left at electron-builder's
+# default `normal`: `maximum` switches the packer to a heavier solid mode whose memory
+# use on a ~700 MB runtime tree is a real risk on a CI runner, and a slightly smaller
+# installer is not worth a build that dies without saying why.
+compression: normal
 
 # src/server/server.mjs ships as a resource rather than being compiled, since it is
 # a plain Node ESM script. It is only the transport: the main process copies it to
@@ -50,13 +55,18 @@ asarUnpack:
 win:
   icon: build/icon.png
   target:
-    # NSIS: the conventional setup.exe with a directory chooser.
+    # 默认只出 NSIS。MSI 在 CI 里作为独立步骤追加（见 .github/workflows/release.yml）。
+    #
+    # 原因：这份应用的运行时树有约 25000 个文件 / 558 MB，WiX 的 light 链接器
+    # 要把每个文件编入 MSI 数据库，实测需要十几分钟；放在默认路径上会让每次
+    # 打包都变得很慢。MSI 本身对批量部署仍有价值，所以保留为按需目标：
+    #   build.bat msi        只出 .msi
+    #   npx electron-builder --win msi
     - target: nsis
       arch: [x64]
-    # MSI: for managed/enterprise deployment via group policy.
-    - target: msi
-      arch: [x64]
-  artifactName: ${productName}-${version}-${arch}.${ext}
+  # 文件名不带版本号：版本已经在目录名里（release/${version}/）。
+  # 保留 ${arch}，因为同平台多架构产物必须区分（macOS x64 与 arm64）。
+  artifactName: ${productName}-${arch}.${ext}
 
 nsis:
   oneClick: false
@@ -65,6 +75,35 @@ nsis:
   createDesktopShortcut: true
   createStartMenuShortcut: true
   shortcutName: DeepSeek Harness
+
+  # 安装界面语言：简体中文。
+  #
+  # 只设两个选项，依据 app-builder-lib/out/targets/nsis/nsisLang.js 的
+  # LangConfigurator：
+  #
+  #   * `installerLanguages` 是**语言名**（zh_CN），代码里映射到 NSIS 自带的
+  #     SimpChinese.nlf/.nsh，决定编入哪些语言。
+  #   * `language` 是 **LCID 十进制**，不是语言名：默认 "1033"（英文美国），
+  #     简体中文是 2052（util/langs.js 里 `zh_CN: 2052`）。写成 "zh_CN" 会让
+  #     makensis 报 `VIAddVersionKey: "/LANG=zh_CN" is not a valid language code!`
+  #
+  # ⚠ 不要设 `multiLanguageInstaller: false`。看 LangConfigurator：
+  #
+  #     this.isMultiLang = options.multiLanguageInstaller !== false
+  #     if (this.isMultiLang) this.langs = installerLanguages.map(...)
+  #     else                  this.langs = ["en_US"]      // ← 语言被强制成英文
+  #
+  # 设成 false 会让 installerLanguages **被完全忽略**、界面退回英文——我在这里
+  # 踩过一次，安装器仍显示英文的 "Choose Installation Options"。
+  # 只列一种语言时 NSIS 本来就不会弹语言选择窗，不需要额外关它。
+  #
+  # electron-builder 自己的字符串有两张表，且都已覆盖 zh_CN：
+  #   templates/nsis/messages.yml          （installing / uninstall 确认等）
+  #   templates/nsis/assistedMessages.yml  （多用户安装页，17 条全有 zh_CN）
+  language: 2052
+  installerLanguages:
+    - zh_CN
+  uninstallDisplayName: DeepSeek Harness
 
 msi:
   oneClick: false
@@ -85,7 +124,9 @@ mac:
       arch: [x64, arm64]
     - target: zip
       arch: [x64, arm64]
-  artifactName: ${productName}-${version}-${arch}.${ext}
+  # 文件名里不带版本号：版本已经在目录名中（release/${version}/）。
+  # 保留 ${arch}，因为同平台的多架构产物必须区分（macOS x64 与 arm64）。
+  artifactName: ${productName}-${arch}.${ext}
   # Unsigned builds are quarantined by Gatekeeper. Setting an identity requires an
   # Apple Developer certificate; notarization additionally needs an app-specific
   # password. Leave hardenedRuntime on so signing works unchanged once a
@@ -96,7 +137,9 @@ mac:
   entitlementsInherit: build/entitlements.mac.plist
 
 dmg:
-  artifactName: ${productName}-${version}-${arch}.${ext}
+  # 文件名里不带版本号：版本已经在目录名中（release/${version}/）。
+  # 保留 ${arch}，因为同平台的多架构产物必须区分（macOS x64 与 arm64）。
+  artifactName: ${productName}-${arch}.${ext}
 
 # ------------------------------------------------------------------ Linux -----
 # AppImage and deb build on Windows (electron-builder downloads a static fpm for
@@ -123,10 +166,14 @@ linux:
       arch: [x64]
     - target: deb
       arch: [x64]
-  artifactName: ${productName}-${version}-${arch}.${ext}
+  # 文件名里不带版本号：版本已经在目录名中（release/${version}/）。
+  # 保留 ${arch}，因为同平台的多架构产物必须区分（macOS x64 与 arm64）。
+  artifactName: ${productName}-${arch}.${ext}
 
 appImage:
-  artifactName: ${productName}-${version}-${arch}.${ext}
+  # 文件名里不带版本号：版本已经在目录名中（release/${version}/）。
+  # 保留 ${arch}，因为同平台的多架构产物必须区分（macOS x64 与 arm64）。
+  artifactName: ${productName}-${arch}.${ext}
 
 deb:
   # The runtime spawns a terminal and needs the OS keychain for credential
