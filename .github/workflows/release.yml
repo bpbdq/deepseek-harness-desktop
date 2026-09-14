@@ -253,17 +253,27 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: artifacts/*
-          draft: true
+          # draft: false —— 直接发布。
+          #
+          # 这里曾是 true，导致 Releases 页面**什么都看不到**：GitHub 只展示已发布
+          # 的版本，草稿仅对所有者可见。产物其实全都上传成功了，但对外不可见，
+          # 容易被误判为"发布失败"。
+          # 需要人工复核流程时再改回 true。
+          draft: false
           generate_release_notes: true
           body: |
             安装包与校验文件见下方附件。
 
             | 平台 | 文件 |
             |---|---|
-            | Windows | `DeepSeek Harness-x64.exe`（NSIS 安装程序）、`.msi` |
-            | Linux | `DeepSeek Harness-x86_64.AppImage`、`.deb`、`.rpm` |
-            | macOS | `DeepSeek Harness-x64.dmg`、`-arm64.dmg` 及对应 `.zip` |
+            | Windows | `DeepSeek.Harness-x64.exe`（NSIS 安装程序，**中文界面**）、`.msi` |
+            | Linux | `DeepSeek.Harness-x86_64.AppImage`、`.deb`、`.rpm` |
+            | macOS | `DeepSeek.Harness-x64.dmg`、`-arm64.dmg` 及对应 `.zip` |
 
             文件名里不带版本号，版本体现在 Release 标签上。
+            GitHub 会把文件名里的空格转成点，因此显示为 `DeepSeek.Harness`。
+
+            **Windows 安装界面为简体中文**；`.msi` 仍是英文（electron-builder 的
+            MsiTarget 不提供语言选项，其 WiX 工具链不含本地化文件）。
 
             macOS 产物未签名（未配置 Apple 开发者证书），首次打开请右键 → 打开。
