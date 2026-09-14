@@ -26,8 +26,8 @@ echo  (classic, scope "repo"): https://github.com/settings/tokens
 echo ============================================================
 echo.
 
-echo [1/2] Pushing branch main ...
-git -c http.proxy=%PROXY% -c https.proxy=%PROXY% push -u origin main
+echo [1/2] Pushing branch master ...
+git -c http.proxy=%PROXY% -c https.proxy=%PROXY% push -u origin master
 if errorlevel 1 goto :failed
 
 echo.
