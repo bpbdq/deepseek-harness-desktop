@@ -152,18 +152,31 @@ jobs:
 
       # ------------------------------------------------------------------ macOS
       #
-      # 签名按证书是否存在**显式**决定，而不是交给 electron-builder 推断。
+      # 签名分两种情形，各自一个步骤，由仓库变量 SIGN_MACOS 选择。
       #
-      # 原因：配置里写着 hardenedRuntime: true，而仓库没有配置证书密钥时
-      # CSC_LINK 为空，electron-builder 在"要签名但没有身份"之间的行为很容易
-      # 变成一次难懂的失败。把 CSC_IDENTITY_AUTO_DISCOVERY 明确设成 false，
-      # 未配置证书时它就干净地跳过签名并产出未签名包。
+      # 为什么不能在 `if:` 里判断 secret：GitHub Actions 不允许在 step 级 `if`
+      # 里引用 `secrets` 上下文，写了会让整个工作流直接报错。
       #
-      # 便携 Node 的架构自动跟随 runner（macos-latest 是 arm64），因此
-      # x64 产物由 --x64 交叉构建，不需要手工替换 runtime/node ——
-      # 替换反而会让两次构建共用一份架构不符的 Node。
+      # 为什么不能只用一个步骤、把 CSC_LINK 设成 secret：未配置的 secret 会被
+      # 展开成**空字符串**。electron-builder 看到 CSC_LINK 有定义就去准备签名
+      # 钥匙串，然后把空字符串当文件路径，报出
+      #   ⨯ /Users/runner/work/…/deepseek-harness-desktop not a file
+      # （它把项目根目录当成证书）。所以未配置证书时这些变量必须**根本不存在**。
+      #
+      # 启用签名：在仓库 Settings → Secrets and variables → Actions 里
+      #   * Variables 新增 SIGN_MACOS = true
+      #   * Secrets  新增 MAC_CERT_P12 / MAC_CERT_PASSWORD（以及可选的公证三项）
+      #
+      # 便携 Node 的架构自动跟随 runner（macos-latest 是 arm64），因此 x64 产物
+      # 由 --x64 交叉构建，不需要手工替换 runtime/node。
       - name: 打包 macOS (x64)
-        if: matrix.target == 'mac'
+        if: matrix.target == 'mac' && vars.SIGN_MACOS != 'true'
+        run: npx electron-builder --mac --x64 --publish never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 打包 macOS (x64, 已签名)
+        if: matrix.target == 'mac' && vars.SIGN_MACOS == 'true'
         run: npx electron-builder --mac --x64 --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -172,11 +185,15 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          # 没有证书就明确关闭身份自动发现：产出未签名包，而不是猜。
-          CSC_IDENTITY_AUTO_DISCOVERY: ${{ secrets.MAC_CERT_P12 == '' && 'false' || 'true' }}
 
       - name: 打包 macOS (arm64)
-        if: matrix.target == 'mac'
+        if: matrix.target == 'mac' && vars.SIGN_MACOS != 'true'
+        run: npx electron-builder --mac --arm64 --publish never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 打包 macOS (arm64, 已签名)
+        if: matrix.target == 'mac' && vars.SIGN_MACOS == 'true'
         run: npx electron-builder --mac --arm64 --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -185,7 +202,6 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          CSC_IDENTITY_AUTO_DISCOVERY: ${{ secrets.MAC_CERT_P12 == '' && 'false' || 'true' }}
 
       # ------------------------------------------------------------------ 诊断
       - name: 列出产物目录
