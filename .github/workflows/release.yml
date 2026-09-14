@@ -109,7 +109,10 @@ jobs:
           set -e
           test -f runtime/node_modules/@deepseek-ai/dsh/package.json || {
             echo "::error::staged 运行时缺失"; exit 1; }
-          echo "dsh staged: $(node -p "require('./runtime/node_modules/@deepseek-ai/dsh/package.json').version")"
+          # 先落到变量再 echo：把 node -p "..." 直接嵌进双引号里会因为引号嵌套
+          # 被 shell 拆坏，这是很容易忽略的写法错误。
+          staged=$(node -p 'require("./runtime/node_modules/@deepseek-ai/dsh/package.json").version')
+          echo "dsh staged: $staged"
           ls -la runtime/node | head -20
 
       # ---------------------------------------------------------------- Windows
