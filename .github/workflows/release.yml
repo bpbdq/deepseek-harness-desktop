@@ -133,9 +133,28 @@ jobs:
 
       - name: 打包 Windows (MSI)
         if: matrix.target == 'win'
-        # MSI 单独一步：它需要 WiX，而且对约 25000 个文件的运行时树，light 链接器
-        # 要跑十几分钟。拆出来既让主构建快速反馈，也让这一步的失败原因清晰可见。
-        run: npx electron-builder --win msi --x64 --publish never
+        # MSI 必须从一个**很短的构建根**里生成。
+        #
+        # 原因：WiX 的 light.exe 受 Windows MAX_PATH(260) 限制，而运行时树里
+        # @opentelemetry 嵌套很深。实测最长路径：
+        #     D:\a\deepseek-harness-desktop\deepseek-harness-desktop\…  262 字符（越线 2）
+        #     F:\code\dshDesktop\…                                      226 字符（本地能过）
+        #     C:\b\…                                                    212 字符
+        # 越线时的报错是 LGHT0103「找不到文件」，完全看不出是路径长度问题——
+        # 上一轮 Windows MSI 就是这样失败的。用 junction 把构建根缩到 C:\b 后，
+        # Node 的 process.cwd() 会保留该短路径（已验证），因此无需复制整个工程。
+        shell: pwsh
+        run: |
+          $short = 'C:\b'
+          if (Test-Path $short) { cmd /c "rmdir `"$short`"" | Out-Null }
+          New-Item -ItemType Junction -Path $short -Target $env:GITHUB_WORKSPACE | Out-Null
+          Set-Location $short
+          node scripts/check-path-length.mjs runtime
+          npx.cmd electron-builder --win msi --x64 --publish never
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # 产物落在 C:\b\release\<版本>\，而 release/ 就在 junction 目标下，
+          # 所以同一个文件在 $env:GITHUB_WORKSPACE\release\ 里也能看到，无需搬回。
+          Get-ChildItem "$short\release" -Recurse -File | Where-Object { $_.Extension -in '.msi', '.yml' } | Select-Object FullName
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
