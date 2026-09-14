@@ -325,12 +325,18 @@ jobs:
 
             | 平台 | 文件 |
             |---|---|
-            | Windows | `DeepSeek.Harness-x64.exe`（NSIS 安装程序，**中文界面**）、`.msi` |
-            | Linux | `DeepSeek.Harness-x86_64.AppImage`、`.deb`、`.rpm` |
-            | macOS | `DeepSeek.Harness-x64.dmg`、`-arm64.dmg` 及对应 `.zip` |
+            | Windows | `dsh-desktop-x64.exe`（NSIS 安装程序，**中文界面**）、`.msi` |
+            | Linux | `dsh-desktop-x86_64.AppImage`、`-amd64.deb` |
+            | macOS | `dsh-desktop-x64.dmg`、`-arm64.dmg` 及对应 `.zip` |
 
             文件名里不带版本号，版本体现在 Release 标签上。
-            GitHub 会把文件名里的空格转成点，因此显示为 `DeepSeek.Harness`。
+
+            > **文件名不要改**。`latest.yml` / `latest-mac.yml` / `latest-linux.yml`
+            > 里的 `url` 必须与附件名**逐字一致**，否则应用内自动更新会 404。
+            > 之前 productName 里带空格（`DeepSeek Harness`）时就踩过：electron-builder
+            > 生成的是 `DeepSeek-Harness-x64.exe`（空格→连字符），而 GitHub 上传后是
+            > `DeepSeek.Harness-x64.exe`（空格→点），两者不匹配。改成不带空格的
+            > `dsh-desktop` 后两处逐字相同。
 
             **Windows 安装界面为简体中文**；`.msi` 仍是英文（electron-builder 的
             MsiTarget 不提供语言选项，其 WiX 工具链不含本地化文件）。

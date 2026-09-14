@@ -112,16 +112,32 @@ into this app's own data directory — never written as plaintext.
 ## Where "check for updates" lives
 
 The official web UI has no such control; it is shell-level, so it lives in the
-shell's own chrome:
+shell's own chrome: **menu bar → Update → Check for Updates…** (`Ctrl+Shift+U`), or
+the tray icon's "Check for updates…".
 
-| Surface | Entry |
+The window opens immediately with "Checking…" and runs both checks **in parallel**,
+pushing each result as it arrives:
+
+| Section | What it shows |
 |---|---|
-| Window menu bar | **Update → Check for Agent Runtime Updates…** (`Ctrl+Shift+U`) |
-| Window menu bar | Help → Check for Agent Runtime Updates… |
-| Tray icon (right-click) | Check for runtime updates… |
+| **Agent runtime** | installed version, newest on the followed channel, runtime source (bundled / downloaded), registry, channel, install location |
+| **Application shell** | installed version, newest published release |
 
-The menu bar is deliberately **not** auto-hidden: the runtime update is only
-user-reachable from there.
+When an update exists, that section grows an action button ("Update runtime and
+restart" / "Download and install", the latter showing download progress).
+
+**The shell section explains why it cannot check** instead of just saying
+"could not check" — an unpackaged dev run has no `app-update.yml`, so self-update is
+unavailable, and the window says so.
+
+> The shell is **no longer checked silently at startup**. That used to pop a dialog
+> after launch with no indication of who triggered it or when. Both tracks are now
+> checked only when the user opens the update window. The one exception is
+> `autoInstallOnAppQuit`: an already-downloaded update installs on quit, so a user who
+> clicked download is not stuck on the old version by forgetting to restart.
+
+The menu bar is deliberately **not** auto-hidden: this is the only user-reachable
+update entry point.
 
 ---
 
@@ -343,8 +359,20 @@ was verified rather than assumed:
 - **Only Windows has been verified end to end.** Linux and macOS build
   configuration is in place and CI produces artifacts, but neither has been
   installed on real hardware here.
-- **Shell self-update is wired but unproven** — `electron-updater` needs a signed
-  build and a real release host.
+- **Shell self-update has not been verified on real hardware.** The code path is
+  wired and the metadata files ship with the Release, but proving it needs a full round
+  trip (publish a new version, watch the old one upgrade), which requires two real
+  releases. **One blocker was already removed**: the filename inside the metadata must
+  match the Release asset name character for character, and it previously did not
+  because `productName` contained a space (see the `productName` note below).
+- **`productName` is `dsh-desktop`, so the install path and executable contain no
+  spaces.** Early builds (v1.0.0) used `DeepSeek Harness` and installed to
+  `%LOCALAPPDATA%\Programs\DeepSeek Harness\`; that path is now
+  `…\Programs\dsh-desktop\`. Uninstall the old version before upgrading, or you will
+  end up with two installs. The rename was necessary: only a space-free filename makes
+  electron-builder's metadata and the GitHub asset name identical, which is what lets
+  auto-update find the download. User-facing names (shortcuts, window title) are
+  unchanged and still read "DeepSeek Harness".
 - **Runtime updates depend on npm.** The installer carries npm (~5 MB) and drives
   it with Electron's own Node. Reimplementing semver resolution and peer hoisting
   would risk a tree that boots but misbehaves.

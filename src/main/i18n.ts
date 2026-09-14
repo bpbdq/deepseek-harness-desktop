@@ -37,6 +37,33 @@ export interface ShellStrings {
   itemCheckUpdates: string
   itemRuntimeVersion: string
   itemShellVersion: string
+  itemUpdateAvailable: string
+  itemUpToDate: string
+  itemOpenReleases: string
+
+  // 更新窗口（两条轨道统一展示）
+  updateWindowTitle: string
+  updateChecking: string
+  updateSectionRuntime: string
+  updateSectionShell: string
+  updateStateLatest: string
+  updateStateAvailable: string
+  updateStateUnknown: string
+  updateLatestLabel: string
+  updateDetailLabel: string
+  updateButtonClose: string
+  updateButtonRuntime: string
+  updateButtonShell: string
+  updateShellUnavailable: string
+  updateShellProgress: string
+  updateShellFailedTitle: string
+  updateShellReadyTitle: string
+  updateShellReadyDetail: string
+  updateShellRestartNow: string
+  updateShellRestartLater: string
+  /** 两条轨道各自的「最新版本」标签：运行时的"最新"指通道，外壳指已发布版本。 */
+  updateRuntimeLatestLabel: string
+  updateShellLatestLabel: string
 
   // 启动加载页（窗口先于服务端显示时用）
   splashTitle: string
@@ -145,9 +172,34 @@ const en: ShellStrings = {
   itemZoomIn: 'Zoom In',
   itemZoomOut: 'Zoom Out',
   itemToggleFullScreen: 'Toggle Full Screen',
-  itemCheckUpdates: 'Check for Agent Runtime Updates…',
+  itemCheckUpdates: 'Check for Updates…',
   itemRuntimeVersion: 'Agent runtime',
   itemShellVersion: 'Shell',
+  itemUpdateAvailable: 'New version available',
+  itemUpToDate: 'Up to date',
+  itemOpenReleases: 'Open the releases page',
+
+  updateWindowTitle: 'Updates',
+  updateChecking: 'Checking…',
+  updateSectionRuntime: 'Agent runtime',
+  updateSectionShell: 'Application shell',
+  updateStateLatest: 'up to date',
+  updateStateAvailable: 'update available',
+  updateStateUnknown: 'could not check',
+  updateLatestLabel: 'Latest',
+  updateDetailLabel: 'Details',
+  updateButtonClose: 'Close',
+  updateButtonRuntime: 'Update runtime and restart',
+  updateButtonShell: 'Download and install',
+  updateShellUnavailable: 'Automatic shell updates need a published release with update metadata.',
+  updateShellProgress: 'Downloading… {percent}%',
+  updateShellFailedTitle: 'Shell update failed',
+  updateShellReadyTitle: 'Shell update ready',
+  updateShellReadyDetail: 'The new version has been downloaded. Restart to apply it.',
+  updateShellRestartNow: 'Restart now',
+  updateShellRestartLater: 'Later',
+  updateRuntimeLatestLabel: 'Newest on this channel',
+  updateShellLatestLabel: 'Newest published release',
 
   splashTitle: 'DeepSeek Harness',
   splashHint: 'Starting the agent runtime…',
@@ -203,7 +255,7 @@ const en: ShellStrings = {
     'The app queries the npm registry for @deepseek-ai/dsh. Check your network or proxy, then try again.',
   updateUpToDateTitle: 'The agent runtime is up to date',
   updateInstalledLabel: 'Installed version',
-  updateNewestLabel: 'Newest on this channel',
+  updateNewestLabel: 'Latest available',
   updateRuntimeSourceLabel: 'Runtime source',
   updateLocationLabel: 'Location',
   updateRegistryLabel: 'Registry',
@@ -256,9 +308,34 @@ const zh: ShellStrings = {
   itemZoomIn: '放大',
   itemZoomOut: '缩小',
   itemToggleFullScreen: '全屏',
-  itemCheckUpdates: '检查智能体运行时更新…',
+  itemCheckUpdates: '检查更新…',
   itemRuntimeVersion: '智能体运行时',
-  itemShellVersion: '外壳',
+  itemShellVersion: '应用外壳',
+  itemUpdateAvailable: '有新版本',
+  itemUpToDate: '已是最新',
+  itemOpenReleases: '打开发布页面',
+
+  updateWindowTitle: '更新',
+  updateChecking: '正在检查…',
+  updateSectionRuntime: '智能体运行时',
+  updateSectionShell: '应用外壳',
+  updateStateLatest: '已是最新',
+  updateStateAvailable: '有可用更新',
+  updateStateUnknown: '无法检查',
+  updateLatestLabel: '最新',
+  updateDetailLabel: '详情',
+  updateButtonClose: '关闭',
+  updateButtonRuntime: '更新运行时并重启',
+  updateButtonShell: '下载并安装',
+  updateShellUnavailable: '外壳自动更新需要已发布且带更新元数据的版本。',
+  updateShellProgress: '正在下载… {percent}%',
+  updateShellFailedTitle: '外壳更新失败',
+  updateShellReadyTitle: '外壳更新已就绪',
+  updateShellReadyDetail: '新版本已下载完成，重启后生效。',
+  updateShellRestartNow: '立即重启',
+  updateShellRestartLater: '稍后',
+  updateRuntimeLatestLabel: '该通道最新版本',
+  updateShellLatestLabel: '最新已发布版本',
 
   splashTitle: 'DeepSeek Harness',
   splashHint: '正在启动智能体运行时，首次启动可能需要十几秒…',
@@ -314,7 +391,7 @@ const zh: ShellStrings = {
     '应用需要访问 npm 源查询 @deepseek-ai/dsh。请检查网络或代理设置后重试。',
   updateUpToDateTitle: '智能体运行时已是最新版本',
   updateInstalledLabel: '已安装版本',
-  updateNewestLabel: '该通道最新版本',
+  updateNewestLabel: '最新可用版本',
   updateRuntimeSourceLabel: '运行时来源',
   updateLocationLabel: '安装位置',
   updateRegistryLabel: '所用源',

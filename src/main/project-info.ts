@@ -1,198 +1,102 @@
 /**
- * “项目信息”窗口。
+ * 「项目信息」窗口。
  *
- * 用 BrowserWindow 载入一个临时 HTML 文件，而不是 `data:` URI：data URI 里
- * 的中文与特殊字符必须 URL 编码，而 HTML 字符串又是用 JS 模板拼的，两层转义
- * 极易出错。写文件 + loadFile 绕开全部转义问题。
+ * 用共享的 panel 组件（`./panel`）承载，因此转义、窗口生命周期与 IPC 细节都只有
+ * 一份实现。这个窗口只是只读展示，不需要预加载的 action 能力，但复用它比再写一遍
+ * 转义与窗口参数更稳妥。
  *
- * 窗口是只读展示，因此 contextIsolation 打开、nodeIntegration 关闭、无 preload。
+ * git 数据通过主进程推送（`openPanel().push`）而不是让页面自己轮询文件：轮询要
+ * 处理"文件还没写好"的竞态，推送则天然有序。
  */
-import { writeFileSync } from 'node:fs'
-import { join } from 'node:path'
 import { BrowserWindow } from 'electron'
 import type { GitInfo } from './git'
+import { escapeHtml, openPanel, renderRows, type PanelRow } from './panel'
 
-/** 面板上要展示的一行信息。 */
-export interface InfoRow {
-  label: string
-  value: string
-  /** 次要说明，灰色小字。 */
-  hint?: string
-}
-
-/** 面板文案（由调用方按语言传入）。 */
+/** 面板文案。 */
 export interface InfoStrings {
   title: string
   close: string
   notARepo: string
   dirty: string
   clean: string
-  detached: string
-}
-
-/** HTML 转义，防止路径里的 `<` `&` 破坏页面。 */
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/gu, '&amp;')
-    .replace(/</gu, '&lt;')
-    .replace(/>/gu, '&gt;')
-    .replace(/"/gu, '&quot;')
 }
 
 /**
- * 生成面板 HTML。
+ * 打开项目信息窗口。
  *
- * 数据从同目录的 `<name>.json` 轮询读取，而不是把数值直接烧进 HTML。原因：
- * git 探测是异步的，而窗口应当在用户点菜单的瞬间就出现；轮询让面板先渲染、
- * 数据到位后自行刷新，也让"重新打开时是最新的"这件事自然成立。
- *
- * @param title - 窗口标题。
- * @param rows - 静态信息行（不含 git）。
+ * @param parent - 父窗口。
+ * @param userDataDir - 写入临时 HTML 的位置。
+ * @param rows - 静态信息行（工作区、版本、路径等）。
  * @param strings - 文案。
- * @param dataFile - 与 HTML 同目录的数据文件名。
- * @returns 完整 HTML 文档。
+ * @returns 窗口与推送 git 状态的方法。
  */
-function renderInfoHtml(title: string, rows: InfoRow[], strings: InfoStrings, dataFile: string): string {
-  const body = rows
-    .map(
-      (row) => `
-      <div class="row">
-        <div class="label">${escapeHtml(row.label)}</div>
-        <div class="value">${escapeHtml(row.value)}${
-          row.hint === undefined ? '' : `<div class="hint">${escapeHtml(row.hint)}</div>`
-        }</div>
-      </div>`,
-    )
-    .join('')
+export function showProjectInfo(
+  parent: BrowserWindow,
+  userDataDir: string,
+  rows: readonly PanelRow[],
+  strings: InfoStrings,
+): { window: BrowserWindow; publishGit: (git: GitInfo) => void } {
+  const body = `
+  <div class="top"><span class="badge off" id="git-badge">${escapeHtml(strings.notARepo)}</span>
+    <span class="flags" id="git-flags"></span></div>
+  ${renderRows(rows)}`
 
-  return `<!doctype html>
-<html lang="zh">
-<head>
-<meta charset="utf-8">
-<title>${escapeHtml(title)}</title>
-<style>
-  :root { color-scheme: dark; }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0; padding: 20px 22px;
-    font: 13px/1.5 -apple-system, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
-    background: #1b1b1f; color: #e8e8ea;
-  }
-  h1 { margin: 0 0 14px; font-size: 15px; font-weight: 600; }
-  .top { display: flex; align-items: center; gap: 10px; margin-bottom: 18px; flex-wrap: wrap; min-height: 24px; }
+  const script = `
+    const strings = ${JSON.stringify(strings)};
+    const badge = document.getElementById('git-badge');
+    const flags = document.getElementById('git-flags');
+    const arrowUp = '\\u2191';
+    const arrowDown = '\\u2193';
+    const dot = ' \\u00b7 ';
+
+    function render(git) {
+      if (!git || !git.isRepo || !git.branch) {
+        badge.className = 'badge off';
+        badge.textContent = strings.notARepo;
+        flags.textContent = '';
+        return;
+      }
+      badge.className = 'badge on';
+      badge.textContent = git.branch;
+      const parts = [];
+      parts.push(git.dirty ? strings.dirty + (git.changedFiles || 0) : strings.clean);
+      if (git.ahead > 0) parts.push(arrowUp + git.ahead);
+      if (git.behind > 0) parts.push(arrowDown + git.behind);
+      flags.textContent = parts.join(dot);
+    }
+
+    window.__panelReady(() => {});
+    window.dshPanel.onPush(({ channel, payload }) => {
+      if (channel === 'git') render(payload.git);
+    });`
+
+  const css = `
+  .top { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; min-height: 22px; }
   .badge {
     font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
     font-size: 12px; padding: 3px 9px; border-radius: 5px;
   }
   .badge.on { background: #2d4a7c; color: #cfe0ff; }
   .badge.off { background: #3a3a40; color: #9a9aa2; }
-  .flags { font-size: 12px; color: #9a9aa2; }
-  .row { display: flex; gap: 14px; padding: 7px 0; border-top: 1px solid #2a2a30; }
-  .row:first-of-type { border-top: none; }
-  .label { flex: 0 0 132px; color: #9a9aa2; }
-  .value {
-    flex: 1 1 auto; min-width: 0;
-    font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
-    word-break: break-all; white-space: pre-wrap;
-  }
-  .hint { margin-top: 3px; color: #7c7c85; font-family: inherit; font-size: 12px; }
-  footer { margin-top: 18px; display: flex; justify-content: flex-end; }
-  button {
-    font: inherit; padding: 6px 18px; border-radius: 6px; cursor: pointer;
-    background: #2f2f36; color: #e8e8ea; border: 1px solid #3d3d45;
-  }
-  button:hover { background: #3a3a42; }
-</style>
-</head>
-<body>
-  <h1>${escapeHtml(title)}</h1>
-  <div class="top" id="git"><span class="flags">…</span></div>
-  ${body}
-  <footer><button autofocus onclick="window.close()">${escapeHtml(strings.close)}</button></footer>
-<script>
-  const strings = ${JSON.stringify(strings)};
-  const target = document.getElementById('git');
-  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  .flags { font-size: 12px; color: #9a9aa2; }`
 
-  function render(git) {
-    if (!git || !git.isRepo || !git.branch) {
-      target.innerHTML = '<span class="badge off">' + esc(strings.notARepo) + '</span>';
-      return;
-    }
-    const flags = [];
-    if (git.dirty) flags.push(esc(strings.dirty) + (git.changedFiles || 0));
-    else flags.push(esc(strings.clean));
-    if (git.ahead > 0) flags.push('\\u2191' + git.ahead);
-    if (git.behind > 0) flags.push('\\u2193' + git.behind);
-    target.innerHTML = '<span class="badge on">' + esc(git.branch) + '</span>' +
-      '<span class="flags">' + flags.join(' \\u00b7 ') + '</span>';
-  }
-
-  async function poll() {
-    try {
-      const response = await fetch(${JSON.stringify(dataFile)} + '?t=' + Date.now());
-      render(await response.json());
-    } catch {
-      /* 文件还没写好，下一轮再试 */
-    }
-  }
-  poll();
-  const timer = setInterval(poll, 700);
-  window.addEventListener('beforeunload', () => clearInterval(timer));
-</script>
-</body>
-</html>`
-}
-
-/**
- * 打开项目信息窗口。
- * @param parent - 父窗口。
- * @param userDataDir - 写入临时 HTML 与 JSON 的位置。
- * @param title - 窗口标题。
- * @param rows - 静态信息行。
- * @param strings - 文案。
- * @returns 打开的窗口。
- */
-export function showProjectInfo(
-  parent: BrowserWindow,
-  userDataDir: string,
-  title: string,
-  rows: InfoRow[],
-  strings: InfoStrings,
-): { window: BrowserWindow; publish: (git: GitInfo) => void } {
-  const htmlPath = join(userDataDir, 'project-info.html')
-  const dataPath = join(userDataDir, 'project-info.json')
-  writeFileSync(htmlPath, renderInfoHtml(title, rows, strings, 'project-info.json'), 'utf8')
-  // 先写一份占位，避免面板首次轮询 404。
-  writeFileSync(dataPath, JSON.stringify({ isRepo: false }), 'utf8')
-
-  const window = new BrowserWindow({
-    width: 580,
-    height: 440,
+  const panel = openPanel(
     parent,
-    modal: false,
-    resizable: true,
-    minimizable: false,
-    maximizable: false,
-    title,
-    autoHideMenuBar: true,
-    backgroundColor: '#1b1b1f',
-    webPreferences: {
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
+    userDataDir,
+    {
+      id: 'project-info',
+      title: strings.title,
+      rows: [...rows],
+      close: strings.close,
+      body,
+      script,
+      css,
+      width: 580,
+      height: 440,
     },
-  })
-  void window.loadFile(htmlPath)
+    // 只读面板没有动作按钮，收到任何 action 都忽略。
+    () => {},
+  )
 
-  return {
-    window,
-    publish: (git: GitInfo): void => {
-      try {
-        writeFileSync(dataPath, JSON.stringify(git), 'utf8')
-      } catch {
-        // 面板是只读展示，写失败不值得打断用户。
-      }
-    },
-  }
+  return { window: panel.window, publishGit: (git: GitInfo): void => panel.push('git', { git }) }
 }

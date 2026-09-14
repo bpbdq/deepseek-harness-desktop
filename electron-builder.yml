@@ -1,5 +1,15 @@
 appId: ai.deepseek.dsh.desktop
-productName: DeepSeek Harness
+# productName 里**不能有空格**。
+#
+# 空格会导致 metadata 与 Release 附件名不一致，而外壳自动更新正是靠两者匹配来
+# 定位下载文件的。实测过一轮发布：
+#     electron-builder 生成的 latest.yml : DeepSeek-Harness-x64.exe   （空格 -> 连字符）
+#     Release 上实际的附件              : DeepSeek.Harness-x64.exe   （空格 -> 点）
+# 两者不匹配，electron-updater 会 404。用不带空格的名字后两处逐字相同。
+#
+# 这个名字同时决定：安装目录、可执行文件名、产物文件名。
+# 面向用户的显示名由 shortcutName 与窗口标题单独设置，因此仍是「DeepSeek Harness」。
+productName: dsh-desktop
 copyright: MIT Licensed — bundles the official DeepSeek Harness runtime
 
 directories:
