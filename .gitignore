@@ -2,14 +2,16 @@
 node_modules/
 dist/
 release/
-
 # 构建期由 `npm run stage` 生成：数百 MB，且可由
 # scripts/stage-runtime.mjs + scripts/stage-node.mjs 完整复现，不入库。
 runtime/
 !runtime/.gitkeep
 
-# 由 `npm run icon` 生成。要正式品牌资源请替换该文件并把它从忽略列表移除。
-build/icon.png
+# 图标**必须入库**：macOS 打包要由它生成 .icns，CI 里缺了它会直接失败
+# （这正是第一轮 macOS 构建失败的原因之一）。
+# 想换正式品牌资源，替换 build/icon.png 后提交即可；需要重新生成占位图标时
+# 执行 `npm run icon`。
+!build/icon.png
 !build/entitlements.mac.plist
 
 # 开发期状态隔离目录（DSH_DESKTOP_HOME 指向这里）
