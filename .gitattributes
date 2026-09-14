@@ -1,0 +1,28 @@
+# 行尾规范化。
+#
+# 这不是洁癖：CI 在 ubuntu / macos runner 上执行 `scripts/*.mjs`，若 checkout 时
+# 被转成 CRLF，shebang 与脚本解析都会出问题。因此文本文件一律 LF。
+#
+# 反过来，批处理在 Windows 上用 CRLF 更安全（老版本 cmd 对 LF-only 的 .bat
+# 处理有坑），所以 .bat/.cmd 单独指定。
+* text=auto eol=lf
+
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# 二进制文件不做任何转换，否则会被损坏。
+*.png binary
+*.ico binary
+*.icns binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.zip binary
+*.7z binary
+*.exe binary
+*.dll binary
+*.node binary
+
+# 该文件由 npm 生成，行尾统一以免每次安装都产生 diff。
+package-lock.json text eol=lf -diff

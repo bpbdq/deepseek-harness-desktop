@@ -1,0 +1,38 @@
+# 依赖与构建产物
+node_modules/
+dist/
+release/
+
+# 构建期由 `npm run stage` 生成：数百 MB，且可由
+# scripts/stage-runtime.mjs + scripts/stage-node.mjs 完整复现，不入库。
+runtime/
+!runtime/.gitkeep
+
+# 由 `npm run icon` 生成。要正式品牌资源请替换该文件并把它从忽略列表移除。
+build/icon.png
+!build/entitlements.mac.plist
+
+# 开发期状态隔离目录（DSH_DESKTOP_HOME 指向这里）
+.dev-home/
+.dev-*/
+.iso-*/
+.packaged-home/
+.sim-update-home/
+.update-test/
+.probe-home/
+
+# 排查过程的临时文件
+probe/
+*.log
+*.tmp
+.screen.png
+.window.png
+.zh.png
+.zh-menu.png
+.installed-zh.png
+
+# 编辑器与系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

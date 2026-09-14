@@ -1,0 +1,152 @@
+appId: ai.deepseek.dsh.desktop
+productName: DeepSeek Harness
+copyright: MIT Licensed — bundles the official DeepSeek Harness runtime
+
+directories:
+  output: release
+  buildResources: build
+
+# `compression` is a top-level option, not an nsis/msi child. The bundled runtime
+# is hundreds of MB of JSON and JS, which deflates well, so the slower maximum
+# setting buys a substantially smaller installer.
+compression: maximum
+
+# src/server/server.mjs ships as a resource rather than being compiled, since it is
+# a plain Node ESM script. It is only the transport: the main process copies it to
+# <runtime>/server.mjs before spawning, because Node resolves imports from the
+# script's own directory and resources/server/ has no reachable node_modules.
+extraResources:
+  - from: runtime
+    to: runtime
+    filter:
+      - '**/*'
+      - '!**/*.map'
+  - from: src/server
+    to: server
+    filter:
+      - 'server.mjs'
+  - from: build/icon.png
+    to: icon.png
+
+# The staged runtime belongs in extraResources only. Excluding it here keeps the
+# ~700 MB tree out of app.asar.
+files:
+  - dist/**/*
+  - package.json
+  - '!**/*.map'
+  - '!**/*.ts'
+  - '!runtime/**'
+  - '!release/**'
+  - '!scripts/**'
+
+# Native addons and anything the loader imports by path must exist as real files.
+# @deepseek-ai/* is unpacked because the boot chain resolves bundle packages via
+# require.resolve paths and creates junctions next to them at runtime.
+asarUnpack:
+  - node_modules/npm/**
+  - node_modules/@deepseek-ai/**
+
+# ---------------------------------------------------------------- Windows -----
+win:
+  icon: build/icon.png
+  target:
+    # NSIS: the conventional setup.exe with a directory chooser.
+    - target: nsis
+      arch: [x64]
+    # MSI: for managed/enterprise deployment via group policy.
+    - target: msi
+      arch: [x64]
+  artifactName: ${productName}-${version}-${arch}.${ext}
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: DeepSeek Harness
+
+msi:
+  oneClick: false
+  perMachine: false
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: DeepSeek Harness
+
+# ------------------------------------------------------------------ macOS -----
+# Must be built on macOS: electron-builder shells out to hdiutil/codesign, which
+# have no Windows or Linux equivalent. Use the GitHub Actions workflow
+# (.github/workflows/release.yml), whose macos runner handles this job.
+mac:
+  icon: build/icon.png
+  category: public.app-category.developer-tools
+  target:
+    - target: dmg
+      arch: [x64, arm64]
+    - target: zip
+      arch: [x64, arm64]
+  artifactName: ${productName}-${version}-${arch}.${ext}
+  # Unsigned builds are quarantined by Gatekeeper. Setting an identity requires an
+  # Apple Developer certificate; notarization additionally needs an app-specific
+  # password. Leave hardenedRuntime on so signing works unchanged once a
+  # certificate is configured.
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+
+dmg:
+  artifactName: ${productName}-${version}-${arch}.${ext}
+
+# ------------------------------------------------------------------ Linux -----
+# AppImage and deb build on Windows (electron-builder downloads a static fpm for
+# deb). rpm does NOT: it needs a real rpmbuild toolchain, so it is built on the
+# ubuntu runner in CI instead.
+linux:
+  icon: build/icon.png
+  category: Development
+  synopsis: DeepSeek Harness desktop client
+  description: >-
+    Desktop client for the DeepSeek Harness (dsh) agent runtime. Bundles the
+    runtime and a pinned Node, so no Node.js or npm install is required.
+  # deb/rpm metadata: fpm refuses to build without a maintainer, and
+  # electron-builder falls back to package.json's author field, which has no
+  # email here. Replace with the real maintainer before publishing.
+  maintainer: dsh-desktop contributors <maintainer@example.com>
+  desktop:
+    entry:
+      Name: DeepSeek Harness
+      Comment: DeepSeek Harness agent runtime
+      Categories: Development;Utility;
+  target:
+    - target: AppImage
+      arch: [x64]
+    - target: deb
+      arch: [x64]
+  artifactName: ${productName}-${version}-${arch}.${ext}
+
+appImage:
+  artifactName: ${productName}-${version}-${arch}.${ext}
+
+deb:
+  # The runtime spawns a terminal and needs the OS keychain for credential
+  # encryption; without libsecret electron's safeStorage reports unavailable.
+  depends:
+    - libgtk-3-0
+    - libnotify4
+    - libnss3
+    - libxss1
+    - libxtst6
+    - xdg-utils
+    - libatspi2.0-0
+    - libsecret-1-0
+    - libdrm2
+    - libgbm1
+
+# Shell self-updates: electron-updater reads this shape from app-update.yml inside
+# the package. GitHub Releases is the default publishing target.
+publish:
+  provider: github
+  owner: pucj0
+  repo: deepseek-harness-desktop
+  releaseType: release

@@ -1,0 +1,166 @@
+name: release
+
+# 三个平台各用自己的 runner 打包，因为产物必须在目标平台上生成：
+#   * macOS 的 .dmg 需要 hdiutil / codesign / productbuild，只在 macOS 上存在
+#   * Linux 的 .rpm 需要 rpmbuild 工具链
+#   * Windows 的 .msi 需要 WiX
+#
+# 触发方式：
+#   * 推送 v* 标签            -> 打包并创建 GitHub Release
+#   * Actions 页面手动触发    -> 只打包，产物作为 workflow artifact 上传
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  # 上游 Node 与 electron-builder 工具的镜像。改用官方源请删掉这几行。
+  ELECTRON_MIRROR: https://registry.npmmirror.com/-/binary/electron/
+  ELECTRON_BUILDER_BINARIES_MIRROR: https://registry.npmmirror.com/-/binary/electron-builder-binaries/
+  DSH_NODE_VERSION: v24.17.0
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # 一个平台失败不影响其它平台出产物。
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows (setup.exe + msi)
+            os: windows-latest
+            target: win
+          - name: Linux (AppImage + deb + rpm)
+            os: ubuntu-latest
+            target: linux
+          - name: macOS (dmg + zip, x64 + arm64)
+            os: macos-latest
+            target: mac
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+        # npm ci 会跑 postinstall 的 link-runtime.mjs；此时 runtime/ 还不存在，
+        # 脚本会打印提示并正常退出，不是错误。
+
+      - name: 编译 TypeScript
+        run: npm run build
+
+      - name: 准备内置运行时与便携 Node
+        run: npm run stage
+        # stage = stage:runtime + stage:node + link:runtime。
+        # stage:node 不带参数时自动按当前平台/架构下载，无需在 CI 里区分。
+
+      # ---------------------------------------------------------------- Windows
+      - name: 打包 Windows
+        if: matrix.target == 'win'
+        # --publish never：发布由最后那个独立的 release job 统一做，避免三个平台
+        # 各自去创建 Release 而互相冲突。
+        run: npx electron-builder --win --x64 --publish never
+        env:
+          # .msi 需要 WiX；GH_TOKEN 让 electron-builder 能取到它缓存的二进制。
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ------------------------------------------------------------------ Linux
+      - name: 打包 Linux
+        if: matrix.target == 'linux'
+        run: |
+          # rpm 需要 rpmbuild，electron-builder 不会自动装。
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq rpm
+          npx electron-builder --linux --x64 --publish never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ------------------------------------------------------------------ macOS
+      - name: 打包 macOS (x64)
+        if: matrix.target == 'mac'
+        run: |
+          # 便携 Node 必须与目标架构一致：set-node 不带参数时按 runner 架构下载，
+          # 而这里要交叉准备 x64。
+          node scripts/stage-node.mjs darwin x64
+          npx electron-builder --mac --x64 --publish never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 配置了证书才会签名；没有则产出未签名包，用户首次打开需右键-打开。
+          CSC_LINK: ${{ secrets.MAC_CERT_P12 }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      - name: 打包 macOS (arm64)
+        if: matrix.target == 'mac'
+        run: |
+          node scripts/stage-node.mjs darwin arm64
+          npx electron-builder --mac --arm64 --publish never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_LINK: ${{ secrets.MAC_CERT_P12 }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      # ------------------------------------------------------------------ 上传
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: dsh-desktop-${{ matrix.target }}
+          # 排除 blockmap 之外的中间目录；release/ 里就是最终产物。
+          path: |
+            release/*.exe
+            release/*.msi
+            release/*.AppImage
+            release/*.deb
+            release/*.rpm
+            release/*.dmg
+            release/*.zip
+            release/*.blockmap
+            release/latest*.yml
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: 创建 GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: 列出将要发布的文件
+        run: ls -la artifacts
+
+      - name: 发布
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          draft: true
+          generate_release_notes: true
+          body: |
+            安装包与校验文件见下方附件。
+
+            | 平台 | 文件 |
+            |---|---|
+            | Windows | `DeepSeek Harness-<版本>-x64.exe`（NSIS 安装程序）、`.msi` |
+            | Linux | `DeepSeek Harness-<版本>-x64.AppImage`、`.deb`、`.rpm` |
+            | macOS | `DeepSeek Harness-<版本>-x64.dmg`、`-arm64.dmg` 及对应 `.zip` |
+
+            macOS 产物未签名（未配置 Apple 开发者证书），首次打开请右键 → 打开。

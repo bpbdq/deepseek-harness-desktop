@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Entitlements for the macOS build.
+
+  The shell spawns a Node child process and loads native addons, both of which the
+  hardened runtime blocks by default. These keys are the minimum set that lets the
+  bundled dsh runtime work; add more only with a concrete failing operation.
+
+  Notarization requires an Apple Developer certificate and an app-specific
+  password; neither is configured here, so a released build is unsigned and
+  Gatekeeper will quarantine it until the user allows it explicitly.
+-->
+<plist version="1.0">
+<dict>
+  <!-- Allow the JIT and writable-executable pages Node/V8 need. -->
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+  <!-- Required because the bundled runtime contains third-party .node addons that
+       are not signed with our identity. -->
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+  <!-- The harness spawns subprocesses (pwsh, bash, git, native choosers). -->
+  <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+  <true/>
+  <key>com.apple.security.inherit</key>
+  <true/>
+  <!-- Agent tools read and write arbitrary user-chosen workspaces. -->
+  <key>com.apple.security.files.user-selected.read-write</key>
+  <true/>
+  <key>com.apple.security.network.client</key>
+  <true/>
+  <key>com.apple.security.network.server</key>
+  <true/>
+  <!-- Credential encryption uses the OS keychain via safeStorage. -->
+  <key>com.apple.security.keychain-access-groups</key>
+  <array/>
+</dict>
+</plist>
