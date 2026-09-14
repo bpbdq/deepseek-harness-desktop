@@ -22,6 +22,14 @@ const PKG = '@deepseek-ai/dsh'
 const requested = process.argv[2] ?? 'latest'
 const registry = process.env.DSH_STAGE_REGISTRY ?? 'https://registry.npmmirror.com'
 
+/**
+ * npm 自己的网络超时（毫秒）。
+ *
+ * 没有它，一个卡住的 registry 连接会耗尽整个 CI 步骤的预算，最后只留下一个
+ * 莫名其妙的失败。设成有界值，让失败快而明确。
+ */
+const FETCH_TIMEOUT_MS = process.env.DSH_FETCH_TIMEOUT_MS ?? '300000'
+
 const npmExecPath = process.env.npm_execpath
 if (npmExecPath === undefined || !existsSync(npmExecPath)) {
   throw new Error('stage-runtime: run this through npm (npm run stage:runtime) so npm_execpath is available')
@@ -52,7 +60,15 @@ execFileSync(
     '--loglevel',
     'error',
   ],
-  { stdio: 'inherit' },
+  {
+    stdio: 'inherit',
+    env: {
+      ...process.env,
+      npm_config_fetch_timeout: FETCH_TIMEOUT_MS,
+      npm_config_fetch_retries: '3',
+      npm_config_fetch_retry_maxtimeout: '60000',
+    },
+  },
 )
 
 const require = createRequire(join(RUNTIME, 'package.json'))

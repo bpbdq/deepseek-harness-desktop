@@ -17,7 +17,11 @@
 //
 // 环境变量：
 //   DSH_NODE_VERSION   默认 v24.17.0
-//   DSH_NODE_MIRROR    默认 npmmirror
+//   DSH_NODE_MIRROR    覆盖镜像源；默认官方 nodejs.org
+//
+// 下载源的选择是有意为之的：**官方源优先**。GitHub Actions runner 在海外，
+// nodejs.org 又快又稳；而国内镜像在 runner 上会很慢甚至超时，然后才回退，
+// 白白浪费几分钟再失败。国内构建机想用镜像请显式设置 DSH_NODE_MIRROR。
 import { createHash } from 'node:crypto'
 import { createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
@@ -28,8 +32,11 @@ import { execFileSync } from 'node:child_process'
 const ROOT = resolve(import.meta.dirname, '..')
 const OUT_DIR = join(ROOT, 'runtime', 'node')
 const VERSION = process.env.DSH_NODE_VERSION ?? 'v24.17.0'
-const MIRROR = process.env.DSH_NODE_MIRROR ?? 'https://registry.npmmirror.com/-/binary/node'
 const OFFICIAL = 'https://nodejs.org/dist'
+const MIRROR = process.env.DSH_NODE_MIRROR ?? OFFICIAL
+
+/** 单个 HTTP 请求的超时（毫秒）。没有它，一个卡住的连接会静默耗掉几分钟。 */
+const FETCH_TIMEOUT_MS = Number(process.env.DSH_FETCH_TIMEOUT_MS ?? 120_000)
 
 const platform = process.argv[2] ?? process.platform
 const arch = process.argv[3] ?? process.arch
@@ -48,15 +55,60 @@ const ARCHIVE_EXTENSIONS = {
   linux: 'tar.xz',
 }
 
+/**
+ * Node 官方发行包文件名里的平台标识。
+ *
+ * 注意 **不是** Node 自己的 `process.platform`：Windows 在那里叫 `win32`，
+ * 但在发行包文件名里是 `win`。拼错过一次，后果是三个平台全部 404：
+ *   node-v24.17.0-win-x64.zip    正确
+ *   node-v24.17.0-win32-x64.zip  错误
+ * 而 `alreadyStaged()` 只看版本号，所以本机装过一次后这个错会被静默掩盖。
+ */
+const ARCHIVE_PLATFORMS = {
+  win32: 'win',
+  darwin: 'darwin',
+  linux: 'linux',
+}
+
 const binaryRelative = NODE_BINARIES[platform]
 const extension = ARCHIVE_EXTENSIONS[platform]
-if (binaryRelative === undefined || extension === undefined) {
+const archivePlatform = ARCHIVE_PLATFORMS[platform]
+
+/**
+ * 自检模式：只打印解析出的文件名并校验，不下载任何东西。
+ *
+ *   node scripts/stage-node.mjs --names
+ *
+ * 存在的理由：归档名拼错时，本机只要装过一次 `alreadyStaged()` 就会短路成功，
+ * 错误被完全掩盖，只有 CI 上（干净 checkout）才暴露。这个自检让命名可以在本地
+ * 零成本验证。
+ */
+if (process.argv.includes('--names')) {
+  console.log(`Node ${VERSION} 归档名解析自检：`)
+  const checks = [
+    ['win32', 'x64', 'win-x64.zip'],
+    ['darwin', 'x64', 'darwin-x64.tar.gz'],
+    ['darwin', 'arm64', 'darwin-arm64.tar.gz'],
+    ['linux', 'x64', 'linux-x64.tar.xz'],
+  ]
+  let ok = true
+  for (const [p, a, suffix] of checks) {
+    const name = `node-${VERSION}-${ARCHIVE_PLATFORMS[p]}-${a}.${ARCHIVE_EXTENSIONS[p]}`
+    const expected = `node-${VERSION}-${suffix}`
+    const pass = name === expected
+    if (!pass) ok = false
+    console.log(`  ${pass ? 'PASS' : 'FAIL'}  ${p}-${a}  ->  ${name}${pass ? '' : `  (expected ${expected})`}`)
+  }
+  process.exit(ok ? 0 : 1)
+}
+
+if (binaryRelative === undefined || extension === undefined || archivePlatform === undefined) {
   console.error(`[stage-node] 不支持的平台: ${platform}（可用: win32 / darwin / linux）`)
   process.exit(1)
 }
 
-const ARCHIVE_NAME = `node-${VERSION}-${platform}-${arch}.${extension}`
-const EXTRACTED_DIR = `node-${VERSION}-${platform}-${arch}`
+const ARCHIVE_NAME = `node-${VERSION}-${archivePlatform}-${arch}.${extension}`
+const EXTRACTED_DIR = `node-${VERSION}-${archivePlatform}-${arch}`
 
 /**
  * 本机已装的 Node 是否正好是这个版本。
@@ -81,9 +133,9 @@ if (alreadyStaged()) {
   process.exit(0)
 }
 
-/** 流式下载，避免 30MB 包整体进内存。 */
+/** 流式下载，避免 30MB 包整体进内存。超时由 AbortSignal 强制，不会静默挂住。 */
 async function download(url, destination) {
-  const response = await fetch(url)
+  const response = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) })
   if (!response.ok) throw new Error(`HTTP ${response.status} for ${url}`)
   if (response.body === null) throw new Error(`empty body for ${url}`)
   await pipeline(response.body, createWriteStream(destination))
@@ -92,15 +144,16 @@ async function download(url, destination) {
 /**
  * 用 Node 官方发布的 SHASUMS256.txt 校验下载。
  *
- * 校验和元数据始终从官方站点取（即使二进制来自镜像），这样被篡改的镜像
+ * 校验和元数据始终优先从官方站点取（即使二进制来自镜像），这样被篡改的镜像
  * 无法同时替换文件和它们的校验值。
  * @returns 计算出的摘要；取不到校验和清单时返回 undefined。
  */
-async function verify(archive, binarySource) {
+async function verify(archive) {
   let expected
-  for (const host of [OFFICIAL, binarySource]) {
+  // 官方源优先：runner 上它比镜像快，而镜像通常不发 SHASUMS256.txt。
+  for (const host of [OFFICIAL, MIRROR]) {
     try {
-      const response = await fetch(`${host}/SHASUMS256.txt`)
+      const response = await fetch(`${host}/SHASUMS256.txt`, { signal: AbortSignal.timeout(30_000) })
       if (!response.ok) continue
       const line = (await response.text())
         .split('\n')
@@ -124,17 +177,27 @@ async function verify(archive, binarySource) {
 mkdirSync(join(ROOT, 'runtime'), { recursive: true })
 const archivePath = join(ROOT, 'runtime', ARCHIVE_NAME)
 
-let source = MIRROR
-try {
-  console.log(`[stage-node] 下载 Node ${VERSION} (${platform}-${arch}) <- ${source}`)
-  await download(`${source}/${VERSION}/${ARCHIVE_NAME}`, archivePath)
-} catch (error) {
-  console.warn(`[stage-node] 镜像失败 (${error.message})，改用官方源 ${OFFICIAL}`)
-  source = OFFICIAL
-  await download(`${source}/${VERSION}/${ARCHIVE_NAME}`, archivePath)
+// 官方源优先，镜像作为回退。两者相同时只试一次。
+const sources = MIRROR === OFFICIAL ? [OFFICIAL] : [OFFICIAL, MIRROR]
+let downloadedFrom
+const failures = []
+for (const source of sources) {
+  try {
+    console.log(`[stage-node] 下载 Node ${VERSION} (${platform}-${arch}) <- ${source}`)
+    await download(`${source}/${VERSION}/${ARCHIVE_NAME}`, archivePath)
+    downloadedFrom = source
+    break
+  } catch (error) {
+    failures.push(`${source}: ${error.message}`)
+    console.warn(`[stage-node] 该源失败: ${error.message}`)
+  }
+}
+if (downloadedFrom === undefined) {
+  console.error(`[stage-node] 所有下载源均失败:\n  ${failures.join('\n  ')}`)
+  process.exit(1)
 }
 
-const digest = await verify(archivePath, source)
+const digest = await verify(archivePath)
 if (digest === undefined) {
   console.warn('[stage-node] 警告: 取不到 SHASUMS256.txt，校验和未验证')
 } else {
@@ -187,6 +250,10 @@ if (platform !== 'win32') {
 
 writeFileSync(
   join(OUT_DIR, 'node-runtime.json'),
-  JSON.stringify({ version: VERSION, platform, arch, source, downloadedAt: new Date().toISOString() }, null, 2) + '\n',
+  JSON.stringify(
+    { version: VERSION, platform, arch, source: downloadedFrom, downloadedAt: new Date().toISOString() },
+    null,
+    2,
+  ) + '\n',
 )
 console.log(`[stage-node] 已内置 Node ${VERSION} -> runtime/node/${basename(binaryRelative)}`)

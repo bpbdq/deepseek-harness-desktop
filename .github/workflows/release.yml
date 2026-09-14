@@ -59,6 +59,11 @@ jobs:
       - name: 编译 TypeScript
         run: npm run build
 
+      - name: 校验便携 Node 归档名解析
+        # 早期哨兵：归档名拼错时本机会被 alreadyStaged() 短路掩盖，只有干净的
+        # CI checkout 才暴露。这一步零成本，几秒内就能把这类错误挡在下载之前。
+        run: node scripts/stage-node.mjs --names
+
       - name: 准备内置运行时与便携 Node
         run: npm run stage
         # stage = stage:runtime + stage:node + link:runtime。
