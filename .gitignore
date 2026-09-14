@@ -42,3 +42,4 @@ probe/
 .idea/
 .DS_Store
 Thumbs.db
+COMMIT_MSG.txt
