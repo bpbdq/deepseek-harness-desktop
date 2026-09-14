@@ -237,24 +237,39 @@ jobs:
           ls -laR release 2>/dev/null | head -60 || echo "release/ 不存在"
 
       # ------------------------------------------------------------------ 上传
+      #
+      # 先把安装包收进一个**专用目录**再上传，而不是直接匹配 release/**。
+      #
+      # 原因是踩过的坑：upload-artifact 会把匹配到的所有文件按**共同祖先**压平，
+      # 而 release/<版本>/win-unpacked/ 里也躺着构建工具产物（node.exe、
+      # node-pty 的 OpenConsole.exe、ripgrep 的 rg.exe、node_pdb.zip 等）。
+      # 用 release/**/*.exe 之类递归匹配时它们会一并被收进去，最终把一堆无关
+      # 二进制传进 Release，并在改名时触发 "Not Found" 失败。
+      #
+      # 只从 <版本>/ 这一层取扩展名匹配的文件，天然排除了 win-unpacked 子树。
+      # 用 find 而不是 shell glob，因为 PowerShell 与 bash 的 glob 语义不一致。
+      - name: 收集安装包
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p dist-artifacts
+          # release/<版本>/<文件>：只取这一层的文件，不递归。
+          find release -mindepth 2 -maxdepth 2 -type f \
+            \( -name '*.exe' -o -name '*.msi' -o -name '*.AppImage' -o -name '*.deb' \
+               -o -name '*.rpm' -o -name '*.dmg' -o -name '*.zip' \
+               -o -name '*.blockmap' -o -name 'latest*.yml' \) \
+            -exec cp -v {} dist-artifacts/ \;
+          echo "--- dist-artifacts ---"
+          ls -la dist-artifacts || true
+
       - name: 上传产物
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: dsh-desktop-${{ matrix.target }}
-          # 产物按版本分目录（release/<版本>/），文件名里不带版本号，
-          # 所以路径必须带一层通配符。这个 pattern 写错过一次：写成
-          # release/*.exe 时匹配不到任何文件，而 if-no-files-found 会让本步失败。
-          path: |
-            release/**/*.exe
-            release/**/*.msi
-            release/**/*.AppImage
-            release/**/*.deb
-            release/**/*.rpm
-            release/**/*.dmg
-            release/**/*.zip
-            release/**/*.blockmap
-            release/**/latest*.yml
+          # 只传上一步收集好的结果：目录是扁平的，因此 artifacts/<文件> 这种
+          # 一层匹配在发布的 job 里就能正确工作。
+          path: dist-artifacts/*
           # 打包本身失败时上面可能没有文件；此时上传步骤不该再报一个
           # 二次错误把真正的原因掩盖掉。
           if-no-files-found: warn
@@ -276,9 +291,8 @@ jobs:
 
       # 显式校验"确实有可发布的产物"，否则直接失败。
       #
-      # 为什么需要：上一版用的是 `files: artifacts/*`，而 upload-artifact 会把文件
-      # 放进**子目录**（产物在 release/<版本>/ 下，上传时该层级被保留）。于是
-      # artifacts/* 一个文件都匹配不到，而 softprops/action-gh-release 对空匹配
+      # 为什么需要：曾用 `files: artifacts/*`，而 upload-artifact 会把文件放进
+      # 子目录，于是 glob 一个文件都匹配不到；softprops/action-gh-release 对空匹配
       # **不报错**——结果是 Release 正常发布、里面却只有 GitHub 自动附带的源码包。
       # 这种"成功但为空"的失败最难发现，所以在这里挡掉。
       - name: 确认产物存在
@@ -294,8 +308,9 @@ jobs:
       - name: 发布
         uses: softprops/action-gh-release@v2
         with:
-          # 必须用 `**` 递归匹配：产物位于 artifacts/<版本>/ 子目录下，
-          # `artifacts/*` 只匹配顶层，会静默产生一个没有附件的 Release。
+          # 递归匹配：各平台的 artifact 解压后可能各自带一层目录。
+          # 构建阶段已把安装包收进扁平的 dist-artifacts/，因此这里不会像
+          # 之前那样把 win-unpacked 里的 node.exe / OpenConsole.exe 一并收进来。
           files: artifacts/**/*
           # draft: false —— 直接发布。
           #
