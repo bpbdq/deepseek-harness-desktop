@@ -447,13 +447,17 @@ git push origin v1.0.0
 
 ## 版本管理
 
-版本号只写在 `package.json` 里，`electron-builder` 从那里读取，产物文件名也用它。
+版本号只写在 `package.json` 里（`package-lock.json` 会同步，否则 `npm ci` 会失败），
+`electron-builder` 从那里读取，产物目录名也用它。
 
-```bat
-version.bat             显示当前版本与下一个版本
-version.bat next        递增
-version.bat list        列出发布序列
-version.bat 1.0.3       显式设置
+### 打包会自动递增
+
+**每次 `build.bat` 都会自动 +1**，所以连续打包得到的是各自独立的版本目录：
+
+```
+build.bat   →  1.0.0 → release/1.0.0/
+build.bat   →  1.0.1 → release/1.0.1/
+build.bat   →  1.0.2 → release/1.0.2/
 ```
 
 递增规则：补丁号到 `.9` 之后进位到次版本并把补丁归零。
@@ -462,16 +466,45 @@ version.bat 1.0.3       显式设置
 1.0.0 → 1.0.1 → … → 1.0.8 → 1.0.9 → 1.1.0 → 1.1.1 → …
 ```
 
-一次典型的发布流程：
+**不改版本号重新打包**：加 `--no-bump`（改了打包配置后想按原版本重验时用）。
 
 ```bat
-version.bat 1.0.0
-build.bat
-git add -A && git commit -m "release v1.0.0"
-git tag v1.0.0 && git push origin v1.0.0
+build.bat win --no-bump
 ```
 
-推送标签后，GitHub Actions 会自动在三个平台打包并创建草稿 Release。
+**调试期不会被反复吃掉版本号**：同一版本在 5 分钟内的重复打包不会再次递增。
+需要强制递增时用 `version.bat next --force`。
+
+### 手动管理
+
+```bat
+version.bat             显示当前版本与下一个版本
+version.bat next        递增（受 5 分钟节流限制）
+version.bat next --force 强制递增
+version.bat list        列出发布序列
+version.bat 1.0.3       显式设置
+```
+
+核查三处版本是否一致（不一致会让 CI 的 `npm ci` 失败）：
+
+```bat
+node scripts\check-version.mjs
+```
+
+一次典型的本地打包与发布流程：
+
+```bat
+build.bat                          :: 自动递增版本并打包，产物在 release\<新版本>\
+git add -A && git commit -m "release v1.0.1"
+git tag v1.0.1 && git push origin v1.0.1
+```
+
+推送标签后，GitHub Actions 会在三个平台打包并**直接发布** Release（不是草稿）。
+CI 里的版本号取自标签所在提交的 `package.json`，所以标签名应与它一致。
+
+> 注意：`build.bat` 会自动递增版本号，因此**本地打包得到的版本**通常就是你要
+> 打标签的那个版本号；打完标签后不要再本地打包，否则版本会继续 +1 而标签仍指向
+> 旧版本。
 
 ---
 

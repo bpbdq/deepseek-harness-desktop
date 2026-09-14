@@ -22,6 +22,10 @@ runtime/
 .sim-update-home/
 .update-test/
 .probe-home/
+.collect-rehearsal/
+
+# 版本递增的节流戳（防止调试期反复打包白吃版本号），属本机状态
+.last-bump
 
 # 排查过程的临时文件
 probe/

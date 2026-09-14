@@ -22,6 +22,7 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
+import { bumpVersion } from './version.mjs'
 
 const ROOT = resolve(import.meta.dirname, '..')
 const RUNTIME_ANCHOR = join(ROOT, 'runtime', 'node_modules', '@deepseek-ai', 'dsh', 'package.json')
@@ -176,6 +177,15 @@ DeepSeek Harness 桌面版 —— 打包
   build.bat clean           清理 dist 与 release/<当前版本> 后完整打包 Windows
   build.bat help            显示本说明
 
+版本号：每次打包会**自动 +1**（1.0.0 → 1.0.1 → … → 1.0.9 → 1.1.0），
+产物因此落在各自唯一的 release/<版本>/ 目录里。
+不想要这次递增时加 --no-bump（例如改完打包配置后按原版本重验）：
+
+  build.bat win --no-bump
+
+同一版本在 5 分钟内的重复打包不会反复递增（避免调试时白吃版本号）；
+需要强制递增用 version.bat next --force。
+
 关于 MSI：运行时树约 25000 个文件，WiX 的 light 链接器要把每个文件编入数据库，
 实测需要十几分钟（I/O 受限）。因此默认打包不包含它；企业批量部署需要时再
 单独执行 build.bat msi。CI 里 MSI 也是独立一步。
@@ -209,7 +219,10 @@ const targets = {
   all: { label: 'Windows + Linux', args: ['--win', '--linux', '--x64'] },
 }
 
-let target = (process.argv[2] ?? 'win').toLowerCase()
+/** 解析命令行：位置参数是目标，`--no-bump` 跳过自动递增。 */
+const argv = process.argv.slice(2)
+const noBump = argv.includes('--no-bump') || process.env.DSH_NO_BUMP === '1'
+let target = (argv.find((token) => !token.startsWith('-')) ?? 'win').toLowerCase()
 
 if (target === 'help' || target === '--help' || target === '-h') {
   help()
@@ -224,6 +237,16 @@ if (target === 'clean') {
   rmSync(join(ROOT, 'dist'), { recursive: true, force: true })
   rmSync(join(ROOT, 'release', current), { recursive: true, force: true })
   target = 'win'
+}
+
+// 每次打包自动递增版本号（1.0.0 → 1.0.1 → …），使每个产物目录天然唯一。
+//
+// 用 --no-bump（或 DSH_NO_BUMP=1）跳过：需要按当前版本重打时用，例如改了打包
+// 配置后验证，不希望白白吃掉一个版本号。
+if (!noBump) {
+  bumpVersion()
+} else {
+  console.log(`[build] 跳过版本递增（--no-bump），当前版本 ${version()}`)
 }
 
 const chosen = targets[target]

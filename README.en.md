@@ -227,33 +227,68 @@ all three platforms on their own runners.
 
 ## Versioning
 
-Versions live only in `package.json`; `electron-builder` reads them from there and
-uses them in artifact names.
+Versions live in `package.json` (`package-lock.json` is kept in sync, otherwise
+`npm ci` fails); `electron-builder` reads them from there and uses them in the
+artifact directory name.
 
-```bat
-version.bat            show current and next version
-version.bat next       bump
-version.bat list       list the release sequence
-version.bat 1.0.3      set explicitly
+### Packaging bumps automatically
+
+**Every `build.bat` increments the version by one**, so consecutive builds land in
+their own directories:
+
+```
+build.bat   ->  1.0.0 -> release/1.0.0/
+build.bat   ->  1.0.1 -> release/1.0.1/
+build.bat   ->  1.0.2 -> release/1.0.2/
 ```
 
 The increment rule carries into the minor version after patch `.9`:
 
 ```
-1.0.0 → 1.0.1 → … → 1.0.9 → 1.1.0 → 1.1.1 → …
+1.0.0 -> 1.0.1 -> ... -> 1.0.8 -> 1.0.9 -> 1.1.0 -> 1.1.1 -> ...
 ```
 
-A typical release:
+**Rebuild without changing the version**: pass `--no-bump` (useful after editing
+packaging configuration and wanting to re-verify the same version).
 
 ```bat
-version.bat 1.0.0
-build.bat
-git add -A && git commit -m "release v1.0.0"
-git tag v1.0.0 && git push origin v1.0.0
+build.bat win --no-bump
 ```
 
-Pushing a `v*` tag makes GitHub Actions build all three platforms and open a draft
-Release.
+**Debugging does not burn version numbers**: repeated builds within 5 minutes do not
+increment again. Use `version.bat next --force` to bypass that.
+
+### Manual control
+
+```bat
+version.bat              show current and next version
+version.bat next         bump (subject to the 5-minute throttle)
+version.bat next --force bump regardless of the throttle
+version.bat list         list the release sequence
+version.bat 1.0.3        set explicitly
+```
+
+Check that all three places agree (a mismatch breaks CI's `npm ci`):
+
+```bat
+node scripts\check-version.mjs
+```
+
+A typical local build and release:
+
+```bat
+build.bat                          :: bumps the version and packages into release\<new version>\
+git add -A && git commit -m "release v1.0.1"
+git tag v1.0.1 && git push origin v1.0.1
+```
+
+Pushing a `v*` tag makes GitHub Actions build all three platforms and **publish** the
+Release directly (not a draft). CI takes the version from `package.json` at the tagged
+commit, so the tag name should match it.
+
+> Note: `build.bat` bumps the version, so the version produced locally is normally the
+> one you tag. Do not build locally again after tagging, or the version advances while
+> the tag still points at the old one.
 
 ### Before publishing
 
