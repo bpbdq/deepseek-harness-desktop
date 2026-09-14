@@ -1,0 +1,27 @@
+{
+  "name": "dsh-client-ui-gitbar",
+  "version": "1.0.0",
+  "private": true,
+  "description": "在输入框工具栏显示 git 分支并提供切换的 dsh 客户端插件。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": [],
+      "external": []
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2"
+  }
+}
