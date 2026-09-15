@@ -31,11 +31,18 @@ compression: normal
 # <runtime>/server.mjs before spawning, because Node resolves imports from the
 # script's own directory and resources/server/ has no reachable node_modules.
 extraResources:
-  - from: runtime
-    to: runtime
-    filter:
-      - '**/*'
-      - '!**/*.map'
+  # 携带**压缩后的运行时归档**，而不是散开的 27 400 个文件。
+  #
+  # 实测：runtime/ 原始 314 MB / 27 400 文件，瘦身后 197 MB，brotli q11 压到 42.9 MB。
+  # 首次启动把它解到 userData（实测 9.2 秒，加载页会显示进度）。这样安装包与解包
+  # 体积都小得多，代价只是首次启动多等几秒。
+  #
+  # 归档由 `npm run stage:runtime`（内部调用 scripts/compress-runtime.mjs）生成，
+  # 是构建前置产物；缺失时打包会失败——这是刻意的，以免又打出一个巨大的安装包。
+  - from: build/runtime.br
+    to: runtime.br
+  - from: build/runtime.json
+    to: runtime.json
   - from: src/server
     to: server
     filter:
@@ -44,7 +51,7 @@ extraResources:
     to: icon.png
 
 # The staged runtime belongs in extraResources only. Excluding it here keeps the
-# ~700 MB tree out of app.asar.
+# runtime tree out of app.asar.
 files:
   - dist/**/*
   - package.json

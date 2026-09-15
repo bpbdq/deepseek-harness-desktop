@@ -49,3 +49,10 @@ COMMIT_MSG.txt
 .dev-out.txt
 .ui-check.png
 .startup-capture.png
+
+# 压缩/体积测量的临时产物
+.pruned/
+.pruned2/
+.codecs.*
+.measure.*
+.aggr.*

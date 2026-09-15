@@ -113,8 +113,11 @@ jobs:
 
       - name: 准备内置运行时与便携 Node
         run: npm run stage
-        # stage = stage:runtime + stage:node + link:runtime。
+        # stage = stage:runtime + stage:node + link:runtime + compress:runtime。
         # stage:node 不带参数时自动按当前平台/架构下载，无需在 CI 里区分。
+        # compress:runtime 把瘦身后的运行时压成 build/runtime.br（42.9 MB），
+        # 安装包携带的是这个归档而不是散开的 27 400 个文件。brotli q11 要跑约 11 分钟，
+        # 在 macOS 与 Windows 上都是如此——这是为了让安装包小 100 MB 以上付出的构建时间。
 
       - name: 确认运行时已就位
         shell: bash
@@ -127,6 +130,20 @@ jobs:
           staged=$(node -p 'require("./runtime/node_modules/@deepseek-ai/dsh/package.json").version')
           echo "dsh staged: $staged"
           ls -la runtime/node | head -20
+
+      # 归档缺失时直接失败。
+      #
+      # electron-builder.yml 的 extraResources 只携带 build/runtime.br；缺了它打包**不会
+      # 报错**，只会产出一个没有运行时的安装包——用户装完打不开。这种"成功但不可用"的
+      # 失败最难发现，所以在打包前先挡掉。
+      - name: 确认运行时归档已生成
+        shell: bash
+        run: |
+          set -e
+          test -f build/runtime.br || {
+            echo "::error::缺少 build/runtime.br —— npm run stage 里的 compress:runtime 没跑成功"; exit 1; }
+          ls -la build/runtime.br
+          cat build/runtime.json
 
       # ---------------------------------------------------------------- Windows
       - name: 打包 Windows (NSIS setup.exe)

@@ -1,0 +1,9 @@
+{
+  "format": "dsh-runtime-archive",
+  "version": 1,
+  "files": 10346,
+  "rawBytes": 207181167,
+  "archiveBytes": 44970257,
+  "codec": "brotli-q11",
+  "builtAt": "2026-09-15T07:47:12.334Z"
+}

@@ -20,6 +20,7 @@ import { healModuleFallback } from './module-heal'
 import type { PanelRow } from './panel'
 import { resolveRuntime } from './paths'
 import type { RuntimeLocation } from './paths'
+import { ensureRuntimeUnpacked } from './runtime-unpack'
 import { showProjectInfo } from './project-info'
 import { readSettings, switchWorkspace } from './settings'
 import { ShellUpdater } from './shell-updater'
@@ -149,9 +150,53 @@ async function main(): Promise<void> {
   mkdirSync(dshHome, { recursive: true })
 
   const credentials = new CredentialStore(userDataDir)
+
+  // 先建窗口（显示加载页），再解包内置运行时。
+  //
+  // 顺序很重要的原因：内置运行时是压缩携带的（安装包 42.9 MB 而不是散开 197 MB），
+  // 首次启动要把它解到用户目录，实测 9.2 秒。若把解包放在建窗口之前，用户会先对着
+  // 空屏幕等这段时间；现在窗口立刻可见，并在加载页上显示解包进度。
+  const iconPath = resolveIconPath(app.isPackaged)
+  const gitInfo = await readGitInfo(workspace)
+  const gitBadge = formatGitBadge(gitInfo, '*')
+  const main = createMainWindow({
+    userDataDir,
+    ...(iconPath !== undefined ? { iconPath } : {}),
+    ...(gitBadge !== undefined ? { gitBadge } : {}),
+    splashTitle: strings.splashTitle,
+    splashHint: strings.splashHint,
+  })
+  const window = main.window
+
+  // 解包内置运行时（已解过则瞬间返回）。
+  let unpackedDir: string | undefined
+  if (app.isPackaged) {
+    const archivePath = join(process.resourcesPath, 'runtime.br')
+    if (existsSync(archivePath)) {
+      try {
+        let lastPercent = -1
+        const result = await ensureRuntimeUnpacked(archivePath, userDataDir, (done, total) => {
+          const percent = Math.floor((done / Math.max(total, 1)) * 100)
+          // 只在百分比变化时重写加载页，避免每个数据块都触发一次页面重载。
+          if (percent === lastPercent) return
+          lastPercent = percent
+          main.setSplashHint(format(strings.splashUnpacking, { percent: String(percent) }))
+        })
+        unpackedDir = join(result.dir, 'runtime')
+      } catch (error) {
+        dialog.showErrorBox(
+          strings.startupFailedTitle,
+          `解包内置运行时失败：${error instanceof Error ? error.message : String(error)}`,
+        )
+        app.exit(1)
+        return
+      }
+    }
+  }
+
   let runtime
   try {
-    runtime = resolveRuntime(userDataDir)
+    runtime = resolveRuntime(userDataDir, unpackedDir)
   } catch (error) {
     dialog.showErrorBox(
       strings.startupFailedTitle,
@@ -205,26 +250,8 @@ async function main(): Promise<void> {
     if (!app.isPackaged || stream === 'stderr') process[stream].write(`${line}\n`)
   })
 
-  // Git status of the workspace: shown in the title bar and the Project Info
-  // panel. Read before the window so the title carries the branch from the start.
-  const gitInfo = await readGitInfo(workspace)
-  const gitBadge = formatGitBadge(gitInfo, '*')
-
-  // Create and show the window BEFORE waiting for the server.
-  //
-  // The dsh plugin tree takes ~10.7s to boot, which is ~95% of startup. Creating the
-  // window only after `server.start()` resolved meant the user stared at nothing for
-  // that whole time. Now the window (with a splash page) is up almost immediately and
-  // is navigated to the UI when the server announces its URL.
-  const iconPath = resolveIconPath(runtime.packaged)
-  const main = createMainWindow({
-    userDataDir,
-    ...(iconPath !== undefined ? { iconPath } : {}),
-    ...(gitBadge !== undefined ? { gitBadge } : {}),
-    splashTitle: strings.splashTitle,
-    splashHint: strings.splashHint,
-  })
-  const window = main.window
+  // 窗口已在前面建好（为了在解包运行时期间就能显示进度），这里不再重建。
+  // 下面开始等 dsh 服务端就绪——它要 ~11 秒启动插件树，窗口此时正显示加载页。
 
   // 纯菜单诊断：菜单不依赖服务端，而启动服务端要 ~11 秒。以
   // DSH_DESKTOP_DUMP_MENU=1 启动时，构建完菜单就直接退出，让菜单可以被脚本

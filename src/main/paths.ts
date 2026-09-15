@@ -49,17 +49,22 @@ export interface RuntimeLocation {
  *
  * Precedence (highest first):
  *   1. an updated runtime downloaded into userData by the updater
- *   2. the runtime shipped inside the installer (resources/runtime)
- *   3. the repo's runtime/ directory, for development
+ *   2. the bundled runtime unpacked from the compressed archive on first run
+ *   3. the runtime shipped as loose files inside the installer (resources/runtime)
+ *   4. the repo's runtime/ directory, for development
  *
  * @param userDataDir - Electron's per-user data directory, where updates land.
+ * @param unpackedDir - 内置归档解包出来的运行时目录（打包运行时才有）。
  * @returns the resolved runtime location.
  */
-export function resolveRuntime(userDataDir: string): RuntimeLocation {
+export function resolveRuntime(userDataDir: string, unpackedDir?: string): RuntimeLocation {
   const packaged = app.isPackaged
   const candidates: string[] = [join(userDataDir, 'runtime', 'current')]
 
   if (packaged) {
+    // 解包目录排在"安装包内的散文件运行时"之前：后者只可能来自开发期或旧包，
+    // 而解包出来的才是本次安装真正携带的那份。
+    if (unpackedDir !== undefined) candidates.push(unpackedDir)
     candidates.push(join(process.resourcesPath, 'runtime'))
   } else {
     candidates.push(resolve(__dirname, '..', '..', 'runtime'))

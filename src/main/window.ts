@@ -112,6 +112,8 @@ export interface MainWindowOptions {
 export function createMainWindow(options: MainWindowOptions): {
   window: BrowserWindow
   navigate: (ready: ServerReady) => Promise<void>
+  /** 更新加载页的提示文案（例如解包进度）。 */
+  setSplashHint: (hint: string) => void
   close: () => void
 } {
   const { userDataDir, iconPath, gitBadge, splashTitle, splashHint } = options
@@ -145,14 +147,19 @@ export function createMainWindow(options: MainWindowOptions): {
 
   // 先显示加载页，让窗口立刻可见。
   const splashPath = join(userDataDir, 'splash.html')
-  try {
-    writeFileSync(splashPath, splashHtml(splashTitle, splashHint), 'utf8')
-    void window.loadFile(splashPath)
-  } catch {
-    // 写不了就退化成空白窗口，不影响后续导航。
+  const writeSplash = (hint: string): void => {
+    try {
+      writeFileSync(splashPath, splashHtml(splashTitle, hint), 'utf8')
+    } catch {
+      // 写不了就退化成空白窗口，不影响后续导航。
+    }
   }
+  writeSplash(splashHint)
+  void window.loadFile(splashPath)
 
   let shown = false
+  /** 是否已经导航到真实 UI（导航后不得再重写加载页）。 */
+  let navigated = false
   const show = (): void => {
     if (shown || window.isDestroyed()) return
     shown = true
@@ -195,10 +202,18 @@ export function createMainWindow(options: MainWindowOptions): {
       origin = new URL(ready.url).origin
       // 带 token 的 URL 只加载一次，随后服务端会 302 到凭 Cookie 认证的干净根路径。
       await window.loadURL(ready.authenticatedUrl)
+      // 标记已导航：此后不再允许重写加载页，否则会把真实界面刷掉。
+      navigated = true
       show()
     },
     close: (): void => {
       if (!window.isDestroyed()) window.destroy()
+    },
+    setSplashHint: (hint: string): void => {
+      // 只在还停在加载页时重写并重载：已经导航到真实 UI 之后再重载会把用户界面刷掉。
+      if (window.isDestroyed() || navigated) return
+      writeSplash(hint)
+      void window.loadFile(splashPath)
     },
   }
 }

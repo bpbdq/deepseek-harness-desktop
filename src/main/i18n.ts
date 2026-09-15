@@ -68,6 +68,8 @@ export interface ShellStrings {
   // 启动加载页（窗口先于服务端显示时用）
   splashTitle: string
   splashHint: string
+  /** 解包内置运行时时的提示，`{percent}` 会被替换成百分比。 */
+  splashUnpacking: string
 
   // 工作区 / 最近项目
   itemOpenFolder: string
@@ -203,6 +205,7 @@ const en: ShellStrings = {
 
   splashTitle: 'DeepSeek Harness',
   splashHint: 'Starting the agent runtime…',
+  splashUnpacking: 'Unpacking the bundled runtime… {percent}%',
 
   itemOpenFolder: 'Open Folder…',
   itemOpenRecent: 'Open Recent',
@@ -339,6 +342,7 @@ const zh: ShellStrings = {
 
   splashTitle: 'DeepSeek Harness',
   splashHint: '正在启动智能体运行时，首次启动可能需要十几秒…',
+  splashUnpacking: '正在解包内置运行时… {percent}%',
 
   itemOpenFolder: '打开文件夹…',
   itemOpenRecent: '最近打开',

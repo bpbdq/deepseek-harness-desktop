@@ -1,0 +1,161 @@
+// 把 runtime 目录瘦身并打成**单个 brotli 压缩包**，供安装包携带。
+//
+//   node scripts/compress-runtime.mjs [--keep]
+//
+// 为什么这样做：runtime 有 27 400 个文件、314 MB，而其中大半在运行期用不到
+// （.ts 源文件、.map、.d.ts、.pdb 调试符号、非本平台二进制、Node 自带的 npm）。
+// 瘦身后 188 MB，brotli q11 压到约 40 MB——安装包因此小得多，解包体积也小得多。
+//
+// 实测过的取舍：
+//   zstd 19  = 55 MB / 2 秒
+//   brotli 11 = 40.5 MB / 10 分钟
+// 选了 brotli：省 15 MB 值得，压缩只发生在构建阶段一次。
+//
+// 归档格式是自己定义的（不用 tar），因为 Node 内置没有 tar 写入器、也不想为此加依赖：
+//   magic "DSHRT1\n" + 若干记录；每条记录 = 4 字节头长度 + JSON 头 + 文件内容。
+// 整体再套一层 brotli。JSON 头里存相对路径与可执行位，解包时还原。
+import {
+  createReadStream,
+  createWriteStream,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
+import { createBrotliCompress, constants } from 'node:zlib'
+import { pipeline } from 'node:stream/promises'
+import { join, relative, resolve } from 'node:path'
+
+const ROOT = resolve(import.meta.dirname, '..')
+const SOURCE = join(ROOT, 'runtime')
+const OUTPUT = join(ROOT, 'build', 'runtime.br')
+const MAGIC = 'DSHRT1\n'
+
+/** 运行期用不到的文件名/扩展名。 */
+const DROP_FILE = [
+  /\.map$/u,
+  /\.d\.ts$/u,
+  /\.d\.mts$/u,
+  /\.ts$/u,
+  /\.mts$/u,
+  /\.md$/u,
+  /\.markdown$/u,
+  /\.flow$/u,
+  // 调试符号：纯调试用途，node-pty 的 conpty 符号单独就有约 10MB。
+  /\.pdb$/u,
+  /\.ilk$/u,
+  /\.exp$/u,
+  /\.lib$/u,
+  // 每个包都带一份的许可证与变更日志。
+  /^LICENSE$/iu,
+  /^LICENCE$/iu,
+  /^LICENSE\.(txt|md)$/iu,
+  /^CHANGELOG(\..*)?$/iu,
+  /^HISTORY(\..*)?$/iu,
+  /^AUTHORS(\..*)?$/iu,
+  // 测试夹具。
+  /^html5lib-tests\.json$/u,
+]
+
+/** 按路径后缀剔除整个目录。 */
+const DROP_DIR = [
+  // Node 分发自带的 npm 与 corepack：外壳用自己那份 npm 做更新，这份用不到。
+  join('node', 'node_modules'),
+  // 非本平台（win32-x64）的预编译二进制。
+  'win32-arm64',
+  'darwin',
+  'linux-x64',
+  'linux-arm64',
+  'linux-arm',
+  join('third_party', 'conpty', '1.25.260303002', 'win10-arm64'),
+]
+
+/** 收集要打包的文件（已剔除无关者），返回相对路径、绝对路径、大小与可执行位。 */
+function collect() {
+  const files = []
+  const walk = (current) => {
+    for (const entry of readdirSync(current, { withFileTypes: true })) {
+      const path = join(current, entry.name)
+      if (entry.isDirectory()) {
+        if (DROP_DIR.some((fragment) => path.endsWith(fragment))) continue
+        walk(path)
+        continue
+      }
+      if (!entry.isFile()) continue
+      if (DROP_FILE.some((pattern) => pattern.test(entry.name))) continue
+      const stats = statSync(path)
+      files.push({
+        path: relative(SOURCE, path).split('\\').join('/'),
+        absolute: path,
+        size: stats.size,
+        // 解包到 Linux/macOS 时要还原可执行位，否则 node/node.exe 之类无法运行。
+        mode: stats.mode & 0o111 ? 0o755 : 0o644,
+      })
+    }
+  }
+  walk(SOURCE)
+  return files
+}
+
+const files = collect()
+const keptBytes = files.reduce((sum, file) => sum + file.size, 0)
+console.log(`[compress] 保留 ${files.length} 个文件 / ${(keptBytes / 1048576).toFixed(1)} MB`)
+
+/**
+ * 生成归档的字节流：先写 magic，再逐条写记录。
+ * 用生成器避免把 188MB 一次性读进内存。
+ * @returns 异步生成器，产出 Buffer。
+ */
+async function* archive() {
+  yield Buffer.from(MAGIC, 'utf8')
+  for (const file of files) {
+    const header = Buffer.from(JSON.stringify({ path: file.path, size: file.size, mode: file.mode }), 'utf8')
+    const length = Buffer.alloc(4)
+    length.writeUInt32LE(header.length, 0)
+    yield length
+    yield header
+    // 逐块读文件内容，避免大文件占满内存。
+    for await (const chunk of createReadStream(file.absolute)) yield chunk
+  }
+  // 结束哨兵：头长度为 0。
+  const end = Buffer.alloc(4)
+  end.writeUInt32LE(0, 0)
+  yield end
+}
+
+rmSync(OUTPUT, { force: true })
+const started = Date.now()
+await pipeline(
+  archive(),
+  createBrotliCompress({
+    params: {
+      [constants.BROTLI_PARAM_QUALITY]: 11,
+      [constants.BROTLI_PARAM_LGWIN]: 24,
+      [constants.BROTLI_PARAM_SIZE_HINT]: keptBytes,
+    },
+  }),
+  createWriteStream(OUTPUT),
+)
+
+const outSize = statSync(OUTPUT).size
+/** 记录包内清单与统计，供外壳诊断显示。 */
+writeFileSync(
+  join(ROOT, 'build', 'runtime.json'),
+  JSON.stringify(
+    {
+      format: 'dsh-runtime-archive',
+      version: 1,
+      files: files.length,
+      rawBytes: keptBytes,
+      archiveBytes: outSize,
+      codec: 'brotli-q11',
+      builtAt: new Date().toISOString(),
+    },
+    null,
+    2,
+  ) + '\n',
+)
+
+console.log(
+  `[compress] ${(outSize / 1048576).toFixed(1)} MB  (${((Date.now() - started) / 1000).toFixed(1)}s)  ->  ${relative(ROOT, OUTPUT)}`,
+)
