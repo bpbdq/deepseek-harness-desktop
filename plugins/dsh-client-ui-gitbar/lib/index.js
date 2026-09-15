@@ -127,17 +127,50 @@ async function readStatus(cwd) {
 }
 
 /**
- * 列出可切换的本地分支。
+ * 列出可切换的分支：本地在前，远程在后，各自带 `isRemote` 标记。
+ *
+ * 只列本地是不够的。实测一个真实仓库：本地 4 个分支、远程 27 个——团队协作时大部分
+ * 分支只存在于远程，用户想在界面上切换却看不到它们，会直接得出"这个功能没用"的结论。
+ *
+ * 切换远程分支时用 `git checkout <名字>`：git 会自动创建同名的本地跟踪分支，这正是
+ * 用户在 IDE 里期待的行为，不需要 `-b` 或 `--track`。
+ *
  * @param cwd - 工作区路径。
- * @returns 分支名数组（已截断到上限）。
+ * @returns 分支条目数组，本地在前。
  */
 async function listBranches(cwd) {
-  const raw = await git(['branch', '--format=%(refname:short)'], cwd)
-  return raw
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line !== '')
-    .slice(0, MAX_BRANCHES)
+  // 用两个独立的 refname 空间查询，而不是 `branch --all` 后靠"名字里有没有斜杠"猜：
+  // 后者会把远程的符号引用 `origin` 误判成本地分支（实测踩到过，它不带斜杠）。
+  //   refs/heads/   —— 本地分支
+  //   refs/remotes/ —— 远程分支（含各远程的 HEAD 符号引用，需排除）
+  const format = '%(refname)\t%(HEAD)'
+  const [localRaw, remoteRaw] = await Promise.all([
+    git(['for-each-ref', '--format=' + format, 'refs/heads/'], cwd),
+    git(['for-each-ref', '--format=' + format, 'refs/remotes/'], cwd),
+  ])
+
+  const parse = (raw, prefix, isRemote) =>
+    raw
+      .split('\n')
+      .map((line) => line.split('\t'))
+      .map(([refname, head]) => ({
+        // 去掉 `refs/heads/` 或 `refs/remotes/` 前缀，得到可切换的名字。
+        name: (refname ?? '').slice(prefix.length).trim(),
+        head: (head ?? '').trim(),
+      }))
+      .filter(({ name }) => name !== '')
+      // `origin/HEAD` 之类的符号引用不是可切换的分支。
+      .filter(({ name }) => !name.endsWith('/HEAD'))
+      .map(({ name, head }) => ({ name, isRemote, current: head === '*' }))
+
+  const local = parse(localRaw, 'refs/heads/', false)
+  const remote = parse(remoteRaw, 'refs/remotes/', true)
+
+  // 本地在前（用户最常切的是本地），各自按名字排序，最后按上限截断。
+  const byName = (a, b) => a.name.localeCompare(b.name)
+  local.sort(byName)
+  remote.sort(byName)
+  return [...local, ...remote].slice(0, MAX_BRANCHES)
 }
 
 /**

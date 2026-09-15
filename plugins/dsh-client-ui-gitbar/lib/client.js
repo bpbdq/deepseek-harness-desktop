@@ -108,7 +108,16 @@ window.__ModuleLoader__.load({
         void (async () => {
           try {
             const payload = await call('branches')
-            if (alive) setBranches(Array.isArray(payload?.branches) ? payload.branches : [])
+            // host 侧返回的是对象数组：{ name, isRemote, current }。
+            // 兼容旧的纯字符串形式，避免 host/client 版本不一致时列表整片消失。
+            const raw = Array.isArray(payload?.branches) ? payload.branches : []
+            if (alive) {
+              setBranches(
+                raw.map((item) =>
+                  typeof item === 'string' ? { name: item, isRemote: false, current: false } : item,
+                ),
+              )
+            }
           } catch (cause) {
             if (alive) setError(String(cause.message ?? cause))
           }
@@ -230,30 +239,37 @@ window.__ModuleLoader__.load({
                 ? react.createElement(
                     'div',
                     { style: { padding: '6px 8px', fontSize: '12px', color: '#8a8a93' } },
-                    '没有本地分支',
+                    '没有可切换的分支',
                   )
                 : branches.map((branch) =>
                     react.createElement(
                       'button',
                       {
-                        key: branch,
+                        key: `${branch.isRemote ? 'r:' : 'l:'}${branch.name}`,
                         type: 'button',
-                        disabled: busy || branch === status.branch,
-                        onClick: () => void switchTo(branch),
+                        disabled: busy || branch.current,
+                        onClick: () => void switchTo(branch.name),
+                        title: branch.isRemote ? '远程分支（切换时会自动创建本地跟踪分支）' : '本地分支',
                         style: {
-                          display: 'block',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '6px',
                           width: '100%',
                           textAlign: 'left',
                           padding: '6px 8px',
                           border: 'none',
                           borderRadius: '5px',
-                          background: branch === status.branch ? '#2d4a7c' : 'transparent',
-                          color: branch === status.branch ? '#cfe0ff' : '#d8d8de',
+                          background: branch.current ? '#2d4a7c' : 'transparent',
+                          color: branch.current ? '#cfe0ff' : '#d8d8de',
                           font: '12px ui-monospace, Consolas, monospace',
-                          cursor: busy || branch === status.branch ? 'default' : 'pointer',
+                          cursor: busy || branch.current ? 'default' : 'pointer',
                         },
                       },
-                      branch,
+                      // 远程分支加一个标记，否则 `origin/x` 与本地 `x` 在列表里难以区分。
+                      branch.isRemote
+                        ? react.createElement('span', { style: { opacity: 0.55, fontSize: '10px' } }, 'R')
+                        : null,
+                      react.createElement('span', null, branch.name),
                     ),
                   ),
             )
