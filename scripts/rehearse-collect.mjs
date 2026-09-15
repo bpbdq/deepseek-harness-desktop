@@ -27,7 +27,8 @@ const PATTERNS = [
   /\.rpm$/u,
   /\.dmg$/u,
   /\.zip$/u,
-  /\.blockmap$/u,
+  // 刻意不含 .blockmap：它是差分下载用的索引，对下载安装包的用户没有意义，
+  // 列在 Release 里只是噪音。去掉也不影响 electron-updater（会退回全量下载）。
   /^latest.*\.yml$/u,
 ]
 

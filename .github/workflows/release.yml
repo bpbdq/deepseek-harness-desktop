@@ -254,10 +254,14 @@ jobs:
         run: |
           mkdir -p dist-artifacts
           # release/<版本>/<文件>：只取这一层的文件，不递归。
+          #
+          # 不发 `.blockmap`：它是 electron-builder 为**差分下载**生成的索引，只有
+          # 联网自动更新才用得到，对下载安装包的用户没有意义，列在 Release 里纯属噪音。
+          # 去掉它不影响 electron-updater——新版会退回全量下载那个安装包本身。
           find release -mindepth 2 -maxdepth 2 -type f \
             \( -name '*.exe' -o -name '*.msi' -o -name '*.AppImage' -o -name '*.deb' \
                -o -name '*.rpm' -o -name '*.dmg' -o -name '*.zip' \
-               -o -name '*.blockmap' -o -name 'latest*.yml' \) \
+               -o -name 'latest*.yml' \) \
             -exec cp -v {} dist-artifacts/ \;
           echo "--- dist-artifacts ---"
           ls -la dist-artifacts || true
@@ -297,11 +301,18 @@ jobs:
       # 这种"成功但为空"的失败最难发现，所以在这里挡掉。
       - name: 确认产物存在
         run: |
-          count=$(find artifacts -type f \( -name '*.exe' -o -name '*.msi' -o -name '*.dmg' -o -name '*.zip' -o -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' -o -name '*.blockmap' -o -name 'latest*.yml' \) | wc -l)
+          count=$(find artifacts -type f \( -name '*.exe' -o -name '*.msi' -o -name '*.dmg' -o -name '*.zip' -o -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' -o -name 'latest*.yml' \) | wc -l)
           echo "找到 $count 个可发布文件"
           find artifacts -type f | head -40
           if [ "$count" -eq 0 ]; then
             echo "::error::没有可发布的产物——检查 download-artifact 的结果与 files 的 glob"
+            exit 1
+          fi
+          # blockmap 不该出现在 Release 里（对下载用户无意义，只是噪音）。
+          # 若它又混进来，在这里直接失败，而不是等发完之后被人发现。
+          if find artifacts -type f -name '*.blockmap' | grep -q .; then
+            echo "::error::产物里含 .blockmap，构建阶段的收集规则应排除它"
+            find artifacts -type f -name '*.blockmap'
             exit 1
           fi
 
