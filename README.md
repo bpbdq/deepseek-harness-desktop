@@ -221,11 +221,13 @@ Electron 主进程                              dsh 服务端子进程
 
 ```
 resources/                     安装包释放，位于 app.asar 之外
-  runtime/                     完整的 @deepseek-ai/dsh 依赖树
-    node_modules/@deepseek-ai/dsh
-    node/                      固定版本的便携 Node
-    runtime.json               记录 stage 的版本与来源
+  runtime.br                   压缩后的运行时归档（42.9 MB，brotli q11）
+  runtime.json                 归档的文件数与体积，供诊断
   server/server.mjs            启动脚本（见 src/server/）
+
+<userData>/bundled-runtime/runtime/   首次启动从 runtime.br 解出（197 MB）
+  node_modules/@deepseek-ai/dsh
+  node/                        固定版本的便携 Node
 
 app.asar
   dist/main/…                  编译后的外壳
@@ -233,7 +235,20 @@ app.asar
   node_modules/npm/            解包存放，使运行时更新无需系统 npm
 ```
 
-`runtime/` **必须**放在 `app.asar` 之外：harness 启动时会创建真实的目录联接（junction）、会 spawn 原生目录选择器等辅助进程、还会按路径加载原生插件——这些在 asar 虚拟文件系统里都不成立。
+**运行时是压缩携带、首次启动解压的**，不是以散文件形式装进安装目录。原因与实测数据：
+
+| 形态 | 安装包 | 解包后磁盘 |
+|---|---|---|
+| 散文件（交给 NSIS 的 LZMA 压缩） | 149.2 MB | 278 MB |
+| `runtime.br` 归档 | **124.2 MB** | 42.9 MB（归档）+ 首次解出的 197 MB |
+
+归档方案安装包小 25 MB、且安装目录少占 235 MB，代价是首次启动多约 9 秒（加载页会显示解包进度）。压缩流程见 `scripts/compress-runtime.mjs`：先剔除运行期用不到的文件（`.ts` 源文件、`.map`、`.d.ts`、`.md`、`.pdb` 调试符号、非本平台二进制、Node 自带的 npm），把 314 MB 瘦到 197 MB，再用 brotli q11 压到 42.9 MB。
+
+> 不携带散文件是刻意的：`runtime.br` 已被 brotli 压满，NSIS 的 LZMA 对它几乎无效（实测再压只省 0.2%），所以两种形态只能二选一——对照实验的结论就是上表。
+
+**解包位置在 `<userData>/bundled-runtime/` 而不是 `<userData>/runtime/`**：后者是运行时自动更新的地盘（它在那里管理 `<版本>/` 目录与 `current` 联接），放在旁边互不干扰。
+
+`runtime/` **必须**在 `app.asar` 之外：harness 启动时会创建真实的目录联接（junction）、会 spawn 原生目录选择器等辅助进程、还会按路径加载原生插件——这些在 asar 虚拟文件系统里都不成立。同理，**解压出来的运行时也必须在 asar 之外**，这也是它落在 `<userData>` 的原因之一。
 
 **启动脚本必须从 `<runtime>/server.mjs` 运行**，不能从 `resources/server/` 运行。Node 解析裸模块名是从**脚本自己所在目录**向上找 `node_modules` 的，放在 `resources/server/` 时查找链会走到盘根，直接 `ERR_MODULE_NOT_FOUND`。主进程在 spawn 前把它复制到运行时根目录，这也顺带覆盖了"下载来的新运行时里没有启动脚本"这种情况。
 
