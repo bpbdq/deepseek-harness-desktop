@@ -207,6 +207,38 @@ async function readSmallBody(request) {
 }
 
 /**
+ * 判断仓库当前是否有未提交改动（含未跟踪文件）。
+ *
+ * 用 `status --porcelain` 而不是只看已跟踪改动：未跟踪文件同样可能被 checkout 拦下
+ * （目标分支里存在同名文件时），此时只报"暂存并切换"才准确。
+ *
+ * @param cwd - 工作区路径。
+ * @returns 是否有未提交改动。
+ */
+async function isDirty(cwd) {
+  const raw = await git(['status', '--porcelain'], cwd)
+  return raw.trim() !== ''
+}
+
+/**
+ * 把未提交改动存进 stash（含未跟踪文件），并返回 stash 引用。
+ *
+ * 只在用户明确点了「暂存并切换」时调用——**绝不自动执行**。stash 是可恢复的
+ * （`git stash pop`），但仍是替用户移动了他的工作区状态，必须由他决定。
+ *
+ * @param cwd - 工作区路径。
+ * @param branch - 目标分支名，仅用于生成可辨认的 stash 消息。
+ * @returns 成功时的 `{ stashed: true, ref }`；无改动可暂存时 `{ stashed: false }`。
+ */
+async function stashChanges(cwd, branch) {
+  if (!(await isDirty(cwd))) return { stashed: false }
+  // -u 把未跟踪文件一并纳入：否则它们可能在切换后被目标分支的同名文件覆盖或残留。
+  await git(['stash', 'push', '-u', '-m', `dsh-gitbar: 切换到 ${branch} 前的自动暂存`], cwd)
+  const ref = (await git(['rev-parse', '--short', 'stash'], cwd)).trim()
+  return { stashed: true, ref }
+}
+
+/**
  * 创建两个 git 路由的处理器。
  *
  * @param workspace - 工作区绝对路径。
@@ -249,15 +281,37 @@ function createGitHandler(workspace) {
           })
           return
         }
+        // 用户明确要求先暂存：只有这种情况才动 stash，绝不自动执行。
+        // stash 是可恢复的（git stash pop），但仍是替用户移动了工作区状态，
+        // 必须由他明确选择。
+        let stash = { stashed: false }
+        if (payload?.stash === true) {
+          try {
+            if (!(await isDirty(workspace))) {
+              sendJson(response, 400, {
+                error: 'nothing to stash',
+                detail: '工作区没有未提交改动，直接切换即可',
+              })
+              return
+            }
+            stash = await stashChanges(workspace, branch)
+          } catch (error) {
+            sendJson(response, 409, { error: 'stash failed', detail: String(error.message) })
+            return
+          }
+        }
+
         try {
-          // 不加 --force、不自动 stash：有未提交改动时 git 自己会拒绝，
-          // 把这个决定留给用户，而不是替他丢弃或暂存改动。
+          // 不加 --force：有未提交改动时 git 自己会拒绝，把这个决定留给用户，
+          // 而不是替他丢弃或暂存改动。
           await git(['checkout', branch], workspace)
         } catch (error) {
           sendJson(response, 409, { error: 'checkout failed', detail: String(error.message) })
           return
         }
-        sendJson(response, 200, await readStatus(workspace))
+        // 把 stash 结果一并返回：界面要能告诉用户"改动存到哪个 stash 了"，
+        // 否则他会以为改动丢了。
+        sendJson(response, 200, { ...(await readStatus(workspace)), stash })
         return
       }
 

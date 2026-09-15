@@ -77,6 +77,15 @@ window.__ModuleLoader__.load({
       const [open, setOpen] = react.useState(false)
       const [busy, setBusy] = react.useState(false)
       const [error, setError] = react.useState('')
+      /** 切换成功后的提示（例如"改动已存入 stash"）。 */
+      const [notice, setNotice] = react.useState('')
+      /**
+       * 上一次尝试切换的目标分支。
+       *
+       * 失败时错误面板要给出「暂存并切换到 <分支>」按钮，就必须记住用户点的是哪一个
+       * ——错误文本里只有文件名，没有分支名。
+       */
+      const [pendingBranch, setPendingBranch] = react.useState('')
 
       const refresh = react.useCallback(async () => {
         try {
@@ -128,19 +137,29 @@ window.__ModuleLoader__.load({
       }, [open])
 
       const switchTo = react.useCallback(
-        async (branch) => {
+        async (branch, options) => {
           setBusy(true)
+          // 记下目标分支：失败时错误面板要靠它给出"暂存并切换到 X"的入口。
+          setPendingBranch(branch)
           try {
-            setStatus(await call('checkout', {
+            const next = await call('checkout', {
               method: 'POST',
               headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({ branch }),
-            }))
+              body: JSON.stringify(options?.stash === true ? { branch, stash: true } : { branch }),
+            })
+            setStatus(next)
             setError('')
+            // 暂存过就把 stash 位置告诉用户——否则他会以为改动丢了。
+            setNotice(
+              next?.stash?.stashed === true
+                ? `改动已存入 stash ${next.stash.ref}，可用 git stash pop 恢复`
+                : '',
+            )
+            // 只有成功才关闭菜单。失败时保持打开，否则用户看不到原因、也不知道
+            // 该重试哪个分支——实测中最常见的失败是有未提交改动（git 会拒绝覆盖）。
             setOpen(false)
           } catch (cause) {
-            // 切换失败最常见的原因是有未提交改动（git 拒绝），把原文给用户看，
-            // 而不是替他 stash——那会动到他的工作区。
+            // 把 git 的原始拒绝原因给用户看，而不是替他 stash——那会动到他的工作区。
             setError(String(cause.message ?? cause))
           } finally {
             setBusy(false)
@@ -148,6 +167,17 @@ window.__ModuleLoader__.load({
         },
         [],
       )
+
+      // 重新打开菜单时清掉上一次的错误与提示：旧信息留到新一次尝试里只会造成混淆。
+      const toggleOpen = react.useCallback(() => {
+        setOpen((value) => {
+          if (!value) {
+            setError('')
+            setNotice('')
+          }
+          return !value
+        })
+      }, [])
 
       if (status === null) {
         // 还没有数据时渲染 null 而不是占位骨架：这个位置空间很小，
@@ -171,7 +201,7 @@ window.__ModuleLoader__.load({
           {
             type: 'button',
             title: error === '' ? `Git: ${label}${flags.length ? ' ' + flags.join(' ') : ''}` : error,
-            onClick: () => setOpen((value) => !value),
+            onClick: toggleOpen,
             style: {
               display: 'inline-flex',
               alignItems: 'center',
@@ -235,6 +265,82 @@ window.__ModuleLoader__.load({
                 },
                 busy ? '切换中…' : '切换分支',
               ),
+
+              // 失败原因必须显示在菜单里。原先只写进按钮的 hover 提示，而菜单照常
+              // 关闭——用户看到的就是"点了没反应"。
+              error === ''
+                ? null
+                : react.createElement(
+                    'div',
+                    {
+                      style: {
+                        margin: '0 4px 6px',
+                        padding: '7px 9px',
+                        borderRadius: '6px',
+                        background: '#3a2626',
+                        border: '1px solid #6b3b3b',
+                        color: '#f0c8c8',
+                        fontSize: '11.5px',
+                        lineHeight: 1.5,
+                        // git 的报错是多行文本，保留换行才有可读性。
+                        whiteSpace: 'pre-wrap',
+                        wordBreak: 'break-word',
+                        maxHeight: '130px',
+                        overflowY: 'auto',
+                      },
+                    },
+                    error,
+                    react.createElement(
+                      'div',
+                      { style: { marginTop: '5px', color: '#c9a0a0' } },
+                      '提交这些改动，或用下方的「暂存并切换」。',
+                    ),
+                    // 只在"因未提交改动而被拒"时给出暂存入口：其它失败（例如目标分支
+                    // 不存在）暂存也解决不了，给按钮反而误导。
+                    /local changes|would be overwritten/iu.test(error)
+                      ? react.createElement(
+                          'button',
+                          {
+                            type: 'button',
+                            disabled: busy,
+                            onClick: () => void switchTo(pendingBranch, { stash: true }),
+                            style: {
+                              marginTop: '7px',
+                              width: '100%',
+                              padding: '6px 8px',
+                              borderRadius: '5px',
+                              border: '1px solid #6b3b3b',
+                              background: '#4a2f2f',
+                              color: '#f0d0d0',
+                              font: '11.5px "Segoe UI", "Microsoft YaHei", system-ui, sans-serif',
+                              cursor: busy ? 'default' : 'pointer',
+                            },
+                          },
+                          busy ? '暂存并切换中…' : `暂存改动并切换到 ${pendingBranch}`,
+                        )
+                      : null,
+                  ),
+
+              // 切换成功后的提示（stash 位置）。放在错误区之外，因为它是成功结果。
+              notice === ''
+                ? null
+                : react.createElement(
+                    'div',
+                    {
+                      style: {
+                        margin: '0 4px 6px',
+                        padding: '6px 9px',
+                        borderRadius: '6px',
+                        background: '#243a2a',
+                        border: '1px solid #35603f',
+                        color: '#b6e0c2',
+                        fontSize: '11.5px',
+                        lineHeight: 1.5,
+                      },
+                    },
+                    notice,
+                  ),
+
               branches.length === 0
                 ? react.createElement(
                     'div',
