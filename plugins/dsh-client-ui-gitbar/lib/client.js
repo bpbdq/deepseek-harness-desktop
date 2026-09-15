@@ -65,6 +65,7 @@ window.__ModuleLoader__.load({
       error_stashFailed: '暂存失败。',
       error_nothingToStash: '工作区没有未提交改动，可直接切换。',
       error_invalidBranch: '分支名不合法，已拒绝。',
+      error_workspaceNotAllowed: '该工作区未在本应用中登记，已拒绝访问。',
       error_unknown: '切换失败。',
     }
 
@@ -82,6 +83,7 @@ window.__ModuleLoader__.load({
       error_stashFailed: 'Stashing failed.',
       error_nothingToStash: 'The working tree is clean; switch directly.',
       error_invalidBranch: 'That branch name was rejected.',
+      error_workspaceNotAllowed: 'That workspace is not registered with this app; access denied.',
       error_unknown: 'Switch failed.',
     }
 
@@ -91,11 +93,15 @@ window.__ModuleLoader__.load({
     /**
      * 请求 host 侧的 git 路由。
      * @param path - 相对 API 前缀的路径，如 'status'。
-     * @param init - 可选的 fetch 选项。
+     * @param options - `cwd` 是要查询的工作区；`init` 是额外的 fetch 选项。
      * @returns 解析后的 JSON；失败时抛出。
      */
-    async function call(path, init) {
-      const response = await fetch(`${API}/${path}`, {
+    async function call(path, options) {
+      const { cwd, ...init } = options ?? {}
+      // 必须带上工作区：会话可以有自己的项目，与外壳启动时的那个不同。
+      // 不传的话 host 会用外壳工作区，于是切换项目后徽章仍显示上一个仓库的分支。
+      const query = typeof cwd === 'string' && cwd !== '' ? `?cwd=${encodeURIComponent(cwd)}` : ''
+      const response = await fetch(`${API}/${path}${query}`, {
         // 同源请求带上 cookie，服务端据此认证。
         credentials: 'same-origin',
         headers: { accept: 'application/json' },
@@ -126,6 +132,7 @@ window.__ModuleLoader__.load({
       stashFailed: 'error_stashFailed',
       nothingToStash: 'error_nothingToStash',
       invalidBranch: 'error_invalidBranch',
+      workspaceNotAllowed: 'error_workspaceNotAllowed',
     }
 
     /**
@@ -159,6 +166,19 @@ window.__ModuleLoader__.load({
       // `t` 由槽的 inject 提供（ctx.locale.bind(NS)）。缺失时退化为原样返回键名，
       // 这样即使 locale 服务没挂上也不会崩。
       const t = typeof props?.t === 'function' ? props.t : (key) => key
+      // `sessionId` 与 `useSessions` 由渲染器按会话作用域自动注入（不需要自己写进
+      // inject）——会话作用域的槽都会收到它们。
+      const { sessionId, useSessions } = props ?? {}
+
+      // 本会话的工作区。这是必须在**每个会话**里读的：用户可以在应用内为会话选择
+      // 项目，它与外壳启动时的 `--workspace` 是两回事。用外壳那个会让徽章显示上一个
+      // 仓库的分支（实测踩到过：外壳是 mmsm-amis、会话切到 scheduler-service-task，
+      // 徽章却一直显示 mmsm-amis 的分支）。
+      const workspace =
+        typeof useSessions === 'function' && sessionId !== undefined
+          ? useSessions((state) => state?.byId?.[sessionId]?.cwd)
+          : undefined
+
       const [status, setStatus] = react.useState(null)
       const [branches, setBranches] = react.useState([])
       const [open, setOpen] = react.useState(false)
@@ -177,12 +197,13 @@ window.__ModuleLoader__.load({
 
       const refresh = react.useCallback(async () => {
         try {
-          setStatus(await call('status'))
+          setStatus(await call('status', { cwd: workspace }))
           setError(null)
         } catch (cause) {
           setError(describeError(cause))
         }
-      }, [])
+        // 依赖 workspace：会话换了项目就要重新查，否则徽章会停在旧仓库的分支上。
+      }, [workspace])
 
       // 首次拉取 + 定时对齐。
       react.useEffect(() => {
@@ -204,7 +225,7 @@ window.__ModuleLoader__.load({
         let alive = true
         void (async () => {
           try {
-            const payload = await call('branches')
+            const payload = await call('branches', { cwd: workspace })
             // host 侧返回的是对象数组：{ name, isRemote, current }。
             // 兼容旧的纯字符串形式，避免 host/client 版本不一致时列表整片消失。
             const raw = Array.isArray(payload?.branches) ? payload.branches : []
@@ -222,7 +243,8 @@ window.__ModuleLoader__.load({
         return () => {
           alive = false
         }
-      }, [open])
+        // 依赖 workspace：会话换项目后，菜单里列出的必须是新仓库的分支。
+      }, [open, workspace])
 
       const switchTo = react.useCallback(
         async (branch, options) => {
@@ -231,6 +253,7 @@ window.__ModuleLoader__.load({
           setPendingBranch(branch)
           try {
             const next = await call('checkout', {
+              cwd: workspace,
               method: 'POST',
               headers: { 'content-type': 'application/json' },
               body: JSON.stringify(options?.stash === true ? { branch, stash: true } : { branch }),
@@ -253,7 +276,8 @@ window.__ModuleLoader__.load({
             setBusy(false)
           }
         },
-        [],
+        // 依赖 workspace：切换时必须对**当前会话**的工作区生效。
+        [workspace],
       )
 
       // 重新打开菜单时清掉上一次的错误与提示：旧信息留到新一次尝试里只会造成混淆。

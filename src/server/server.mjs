@@ -290,6 +290,14 @@ async function main() {
   // 而工作区是启动参数、应当是唯一权威。与既有的 DSH_DESKTOP_RUNTIME_VERSION 同一做法。
   process.env.DSH_DESKTOP_WORKSPACE = workspace
 
+  // 把 home 也写回环境变量。
+  //
+  // `DSH_HOME` 只在命令行（`--dsh-home`）里给出时，插件读 `process.env.DSH_HOME`
+  // 会拿到 undefined。而 gitbar 需要它去读 `<home>/storages/workspace.json`——那是
+  // 应用侧登记的工作区列表，用来判断会话请求的目录是否合法。读不到的话，用户在应用里
+  // 选过的其它项目都会被判为"未登记"而拒绝，徽章就仍显示外壳那个仓库的分支。
+  process.env.DSH_HOME = home
+
   // Link the installation's dependency closure into $DSH_HOME/profiles/node_modules
   // and reconcile the profile-local links. This is what makes the bundled runtime
   // self-sufficient; it also means a newly swapped runtime needs no reinstall.

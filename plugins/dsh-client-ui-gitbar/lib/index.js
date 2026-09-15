@@ -13,6 +13,8 @@
 //   3. 用 execFile（参数数组）而不是 exec（shell 字符串），从根上避免 shell 注入
 //   4. 不做自动 stash：切换分支会改变用户工作区，必须由用户明确选择
 import { execFile } from 'node:child_process'
+import { readFileSync, realpathSync } from 'node:fs'
+import { isAbsolute, join } from 'node:path'
 
 /** 插件名，用于诊断与 effect 标签。 */
 export const name = 'gitbar'
@@ -69,7 +71,7 @@ function git(args, cwd) {
 }
 
 /**
- * 解析工作区路径。
+ * 解析外壳启动时的工作区。
  *
  * 优先取外壳注入的环境变量：`server.mjs` 在启动时已经知道工作区，注入它比让插件
  * 靠 `process.cwd()` 猜测更可靠（当前目录会被其它代码改变）。两者都拿不到时不报错，
@@ -77,10 +79,45 @@ function git(args, cwd) {
  *
  * @returns 绝对路径，或 undefined。
  */
-function resolveWorkspace() {
+function shellWorkspace() {
   const injected = process.env.DSH_DESKTOP_WORKSPACE
   if (typeof injected === 'string' && injected !== '') return injected
   return process.cwd()
+}
+
+/**
+ * 收集允许被当作工作区的目录。
+ *
+ * = 外壳启动时的工作区 + 应用侧登记过的所有工作区。后者存在
+ * `<home>/storages/workspace.json`（同一份文件应用界面用来列出可选项目）。
+ *
+ * 读不到或不认识该文件时退化为"只有外壳工作区"，而不是抛错——本地化/多项目是增强，
+ * 不该因为它而让整个插件挂不上。
+ *
+ * @returns 绝对路径数组（可能只含外壳工作区）。
+ */
+function collectAllowedRoots() {
+  const roots = new Set()
+  const shell = shellWorkspace()
+  if (shell !== undefined) roots.add(shell)
+
+  const home = process.env.DSH_HOME
+  if (typeof home === 'string' && home !== '') {
+    const file = join(home, 'storages', 'workspace.json')
+    try {
+      const parsed = JSON.parse(readFileSync(file, 'utf8'))
+      const table = parsed?.tables?.workspaces
+      if (table !== null && typeof table === 'object') {
+        for (const record of Object.values(table)) {
+          const root = record?.root ?? record?.path
+          if (typeof root === 'string' && root !== '') roots.add(root)
+        }
+      }
+    } catch {
+      // 文件不存在或结构变化——只用外壳工作区即可。
+    }
+  }
+  return [...roots]
 }
 
 /**
@@ -239,15 +276,70 @@ async function stashChanges(cwd, branch) {
 }
 
 /**
- * 创建两个 git 路由的处理器。
+ * 解析本次请求要操作的工作区。
  *
- * @param workspace - 工作区绝对路径。
+ * **必须是每次请求传入的**，不能用外壳启动时的那个。原因：应用内可以给会话选择
+ * 工作区（侧边栏「选择工作区」），它与外壳的 `--workspace` 是两回事。实测踩到过：
+ * 外壳工作区是 `mmsm-amis`、会话切到了 `scheduler-service-task`，徽章却一直显示
+ * 前一个仓库的分支——因为 host 拿的是固定的外壳工作区。
+ *
+ * 安全约束：只接受**已存在于 allowedRoots** 的路径。否则任何能访问 loopback 的
+ * 页面都能让 host 对任意目录执行 git 命令，那是明显的越权面。
+ * 用 realpath 比较以消除 `..` 与符号链接造成的等价路径绕过。
+ *
+ * @param requestUrl - 请求的 URL 对象。
+ * @param allowedRoots - 允许的工作区集合（外壳工作区 + 已登记的应用工作区）。
+ * @returns 绝对路径，或 undefined（不在允许集合内）。
+ */
+function resolveRequestWorkspace(requestUrl, allowedRoots) {
+  const requested = requestUrl.searchParams.get('cwd')
+  // 必须同时判 null 与空串：`URLSearchParams.get()` 在参数缺失时返回 **null**，
+  // 只判 undefined/'' 会让 null 漏下去，随后 realpathSync 抛出
+  // "The path argument must be of type string. Received null"（实测踩到过，
+  // 表现为本该 400 的请求变成 500）。
+  if (typeof requested !== 'string' || requested === '') return undefined
+  if (!isAbsolute(requested)) return undefined
+
+  let real
+  try {
+    real = realpathSync.native(requested)
+  } catch {
+    return undefined
+  }
+  for (const root of allowedRoots) {
+    try {
+      if (realpathSync.native(root) === real) return real
+    } catch {
+      // 允许集合里的某个根已不存在——跳过，不影响其它根。
+    }
+  }
+  return undefined
+}
+
+/**
+ * 创建 git 路由的处理器。
+ *
+ * @param allowedRoots - 允许作为工作区的目录集合。
  * @returns `(request, response)` 处理器。
  */
-function createGitHandler(workspace) {
+function createGitHandler() {
   return async (request, response) => {
     try {
       const url = new URL(request.url ?? '/', 'http://localhost')
+
+      // 每次请求都解析工作区，并且**每次都重读**允许集合。
+      //
+      // 重读的原因：应用侧的 `workspace.json` 会在运行中被更新（用户新选一个项目），
+      // 而在 apply 时算一次就会把新项目挡在门外。重读一个小 JSON 的成本可以忽略。
+      const workspace = resolveRequestWorkspace(url, collectAllowedRoots())
+      if (workspace === undefined) {
+        sendJson(response, 400, {
+          error: 'workspace not allowed',
+          code: 'workspaceNotAllowed',
+          detail: 'cwd must be one of the workspaces known to this app',
+        })
+        return
+      }
 
       // GET  —— 分支状态（含改动数、领先/落后）
       if (request.method === 'GET') {
@@ -338,8 +430,11 @@ function createGitHandler(workspace) {
  * @param ctx - host 侧 cordis 上下文。
  */
 export function apply(ctx) {
-  const workspace = resolveWorkspace()
-  const handler = createGitHandler(workspace)
+  // 工作区在**每次请求**里解析（见 createGitHandler），因为会话可以选择自己的项目：
+  // 那只存在应用侧状态里（`<home>/storages/workspace.json`），外壳启动时的
+  // `--workspace` 只是其中之一。不这样处理，用户切换项目后徽章会继续显示上一个
+  // 仓库的分支——实测踩到过。
+  const handler = createGitHandler()
 
   // 注册为两条精确路由而不是一条前缀路由：webServer 的 kind 只有 exact 与 prefix
   // 两类语义，用精确路径可以让"哪些路径属于本插件"在注册表里一目了然。
