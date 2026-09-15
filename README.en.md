@@ -290,21 +290,41 @@ Check that all three places agree (a mismatch breaks CI's `npm ci`):
 node scripts\check-version.mjs
 ```
 
-A typical local build and release:
+A typical release:
 
 ```bat
-build.bat                          :: bumps the version and packages into release\<new version>\
-git add -A && git commit -m "release v1.0.1"
-git tag v1.0.1 && git push origin v1.0.1
+:: 1. write this version's notes first (see below); the heading in RELEASE_NOTES.md
+::    must contain the version you are about to release
+:: 2. release: bump, commit, tag, push, and trigger CI
+release.bat
 ```
 
 Pushing a `v*` tag makes GitHub Actions build all three platforms and **publish** the
-Release directly (not a draft). CI takes the version from `package.json` at the tagged
-commit, so the tag name should match it.
+Release directly (not a draft), filling its body from `RELEASE_NOTES.md`.
 
-> Note: `build.bat` bumps the version, so the version produced locally is normally the
-> one you tag. Do not build locally again after tagging, or the version advances while
-> the tag still points at the old one.
+> Note: `build.bat` also bumps the version. **Local builds are for self-testing**; use
+> `release.bat` for an actual release — it verifies that the tag matches the
+> `package.json` version and that the release notes are written before tagging.
+
+### Release notes (required per version)
+
+Each version's "what changed" lives in `RELEASE_NOTES.md` at the repository root:
+
+```markdown
+# 1.0.9
+
+## Fixes
+
+- What changed, and what it means for the user
+```
+
+**`release.bat` enforces this**: the file must exist and its first heading must contain
+the version being released, otherwise the release is refused. The check exists because a
+missing note is invisible from the outside — the Release still goes out, it just has no
+changelog, which is exactly what users came to read. CI additionally appends the commit
+list since the previous tag as the full changelog.
+
+After releasing, move the heading to the next version and keep writing.
 
 ### Before publishing
 

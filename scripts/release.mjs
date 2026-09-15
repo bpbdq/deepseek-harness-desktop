@@ -19,6 +19,8 @@
 //   * package.json 已提交（未提交时 CI 拿到的是旧版本号）
 //   * 显式指定的版本号必须等于序列给出的下一个版本，除非显式加了 --force
 import { execFileSync } from 'node:child_process'
+import { existsSync, readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { next, readVersion, writeVersion } from './version.mjs'
 
 const args = process.argv.slice(2)
@@ -38,6 +40,39 @@ function gitWithProxy(...argv) {
     ['-c', 'http.proxy=http://127.0.0.1:7890', '-c', 'https.proxy=http://127.0.0.1:7890', ...argv],
     { encoding: 'utf8', env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } },
   ).trim()
+}
+
+/**
+ * 校验本版本的发布说明已经写好。
+ *
+ * 约定：`RELEASE_NOTES.md` 的**第一个标题**必须写明本次版本号（如 `# 1.0.9`），
+ * CI 会把整篇填进 Release 正文的「本次更新」一节。
+ *
+ * 做成硬性检查是因为"忘了写"从外部看不出来：Release 照常发出，只是没有更新内容，
+ * 而用户正是来看这个的。
+ * @param version - 即将发布的版本号。
+ */
+function assertReleaseNotes(version) {
+  const path = resolve(import.meta.dirname, '..', 'RELEASE_NOTES.md')
+  if (!existsSync(path)) {
+    console.error(`\n缺少 RELEASE_NOTES.md——请先写好 ${version} 的更新说明再发布。`)
+    process.exit(1)
+  }
+  const text = readFileSync(path, 'utf8')
+  const heading = /^#\s+(.+)$/mu.exec(text)
+  if (heading === null) {
+    console.error('\nRELEASE_NOTES.md 里没有标题（应以 `# <版本>` 开头）。')
+    process.exit(1)
+  }
+  // 允许标题里带「（待发布）」这类后缀，只要版本号出现在标题里即可。
+  if (!heading[1].includes(version)) {
+    console.error('')
+    console.error(`RELEASE_NOTES.md 的标题是「${heading[1].trim()}」，与本次要发布的 ${version} 不一致。`)
+    console.error(`请先把标题改成：# ${version}`)
+    console.error('')
+    process.exit(1)
+  }
+  console.log(`发布说明: RELEASE_NOTES.md（标题「${heading[1].trim()}」）`)
 }
 
 const current = readVersion()
@@ -76,6 +111,13 @@ if (dirty !== '') {
   console.error(dirty)
   process.exit(1)
 }
+
+// 发布说明必须写好，否则拒绝发布。
+//
+// 每个版本的说明写在 RELEASE_NOTES.md 里，CI 会把它填进 Release 正文。把它做成硬性
+// 检查，是因为"忘了写"从外部看不出来：Release 会正常发出，只是没有本次更新内容，
+// 而用户恰恰是来看这个的。
+assertReleaseNotes(target)
 
 const existing = git('tag', '--list', `v${target}`)
 if (existing !== '') {
