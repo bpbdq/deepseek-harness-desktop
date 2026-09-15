@@ -43,3 +43,9 @@ probe/
 .DS_Store
 Thumbs.db
 COMMIT_MSG.txt
+
+# 调试探针的临时输出
+.dev-err.txt
+.dev-out.txt
+.ui-check.png
+.startup-capture.png
