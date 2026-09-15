@@ -288,15 +288,18 @@ function createGitHandler(workspace) {
         if (payload?.stash === true) {
           try {
             if (!(await isDirty(workspace))) {
-              sendJson(response, 400, {
-                error: 'nothing to stash',
-                detail: '工作区没有未提交改动，直接切换即可',
-              })
+              // 只回稳定的 code，不带任何自然语言：host 不知道界面语言，
+              // 提示文案由客户端按当前语言渲染。
+              sendJson(response, 400, { error: 'nothing to stash', code: 'nothingToStash' })
               return
             }
             stash = await stashChanges(workspace, branch)
           } catch (error) {
-            sendJson(response, 409, { error: 'stash failed', detail: String(error.message) })
+            sendJson(response, 409, {
+              error: 'stash failed',
+              code: 'stashFailed',
+              detail: String(error.message),
+            })
             return
           }
         }
@@ -306,7 +309,13 @@ function createGitHandler(workspace) {
           // 而不是替他丢弃或暂存改动。
           await git(['checkout', branch], workspace)
         } catch (error) {
-          sendJson(response, 409, { error: 'checkout failed', detail: String(error.message) })
+          // 带一个**稳定的 code**：客户端据此渲染当前语言的提示。
+          // git 自己的英文原文照旧放在 `detail` 里——它是权威信息，翻译反而失真。
+          sendJson(response, 409, {
+            error: 'checkout failed',
+            code: 'localChanges',
+            detail: String(error.message),
+          })
           return
         }
         // 把 stash 结果一并返回：界面要能告诉用户"改动存到哪个 stash 了"，

@@ -37,6 +37,54 @@ window.__ModuleLoader__.load({
     /** 路由前缀，与 host 半边保持一致。 */
     const API = '/dsh-desktop/gitbar'
 
+    /** 本地化命名空间：字典注册到它下面，`ctx.locale.bind(NS)` 得到 `t`。 */
+    const NS = 'gitbar'
+
+    /**
+     * 两套字典。
+     *
+     * 与官方客户端插件同一做法（见 dsh-client-ui-directory-picker-browse）：在 apply
+     * 里 `ctx.locale.register(NS, { zh, en })`，再通过槽的 `inject` 把
+     * `ctx.locale.bind(NS)` 得到的 `t` 传给组件。
+     *
+     * 注意 host 侧不返回任何自然语言提示——它不知道界面语言，只回稳定的 code，
+     * 由这里的 `error_<code>` 渲染。git 自己的报错原文照常显示，因为它是权威信息，
+     * 翻译反而失真。
+     */
+    const zh = {
+      switching: '切换中…',
+      switchBranch: '切换分支',
+      stashing: '暂存并切换中…',
+      stashAndSwitch: '暂存改动并切换到 {branch}',
+      hintCommitOrStash: '提交这些改动，或用下方的「暂存并切换」。',
+      noBranches: '没有可切换的分支',
+      remoteBranch: '远程分支（切换时会自动创建本地跟踪分支）',
+      localBranch: '本地分支',
+      stashed: '改动已存入 stash {ref}，可用 git stash pop 恢复',
+      error_localChanges: '切换被 git 拒绝：有未提交改动会被覆盖。',
+      error_stashFailed: '暂存失败。',
+      error_nothingToStash: '工作区没有未提交改动，可直接切换。',
+      error_invalidBranch: '分支名不合法，已拒绝。',
+      error_unknown: '切换失败。',
+    }
+
+    const en = {
+      switching: 'Switching…',
+      switchBranch: 'Switch branch',
+      stashing: 'Stashing and switching…',
+      stashAndSwitch: 'Stash changes and switch to {branch}',
+      hintCommitOrStash: 'Commit these changes, or use "Stash changes and switch" below.',
+      noBranches: 'No branches to switch to',
+      remoteBranch: 'Remote branch (a local tracking branch is created on switch)',
+      localBranch: 'Local branch',
+      stashed: 'Changes saved to {ref}; restore them with git stash pop',
+      error_localChanges: 'git refused the switch: you have uncommitted changes it would overwrite.',
+      error_stashFailed: 'Stashing failed.',
+      error_nothingToStash: 'The working tree is clean; switch directly.',
+      error_invalidBranch: 'That branch name was rejected.',
+      error_unknown: 'Switch failed.',
+    }
+
     /** 状态轮询间隔：分支会在外部被切换（终端里 git checkout），所以要定期对齐。 */
     const POLL_MS = 15000
 
@@ -61,8 +109,43 @@ window.__ModuleLoader__.load({
         // 服务端理论上总是回 JSON；真出现 HTML 时把原文带出来，便于定位。
         throw new Error(text.slice(0, 200))
       }
-      if (!response.ok) throw new Error(payload?.detail ?? payload?.error ?? `HTTP ${response.status}`)
+      if (!response.ok) {
+        // 把 host 的 code 与 detail 都挂到错误对象上，交给 describeError 决定
+        // 用哪条本地化短句、以及是否展示 git 原文。
+        const error = new Error(payload?.error ?? `HTTP ${response.status}`)
+        if (typeof payload?.code === 'string') error.code = payload.code
+        if (typeof payload?.detail === 'string') error.detail = payload.detail
+        throw error
+      }
       return payload
+    }
+
+    /** host 的稳定 code 到字典键的映射。 */
+    const ERROR_KEYS = {
+      localChanges: 'error_localChanges',
+      stashFailed: 'error_stashFailed',
+      nothingToStash: 'error_nothingToStash',
+      invalidBranch: 'error_invalidBranch',
+    }
+
+    /**
+     * 把错误整理成"字典键 + 原始细节"。
+     *
+     * 之所以要分开：git 的报错是英文长文（并含文件名），翻译它没有意义也不可靠；
+     * 而"为什么失败、下一步该做什么"必须跟界面语言走。因此 host 返回稳定的 code，
+     * 这里映射成字典键，由**组件内部**用 `t` 翻译。
+     *
+     * 注意本函数不自己翻译：它在组件外面，拿不到那里的 `t`（写成 `t(...)` 会抛
+     * "t is not defined"，让整个插件加载失败）。
+     *
+     * @param cause - 捕获到的异常。
+     * @returns `{ key, detail }`；`detail` 为空串表示没有可展示的原文。
+     */
+    function describeError(cause) {
+      const code = cause?.code
+      const detail = typeof cause?.detail === 'string' ? cause.detail : ''
+      const known = typeof code === 'string' && Object.hasOwn(ERROR_KEYS, code)
+      return { key: known ? ERROR_KEYS[code] : 'error_unknown', detail }
     }
 
     /**
@@ -70,13 +153,18 @@ window.__ModuleLoader__.load({
      *
      * 用函数组件 + hooks 而不是类：与官方包的写法一致，且 hooks 的生命周期更容易和
      * 插件的 effect 对齐。
+     * @param props - 槽注入的属性，其中 `t` 是按当前语言绑定的翻译函数。
      */
-    function BranchChip() {
+    function BranchChip(props) {
+      // `t` 由槽的 inject 提供（ctx.locale.bind(NS)）。缺失时退化为原样返回键名，
+      // 这样即使 locale 服务没挂上也不会崩。
+      const t = typeof props?.t === 'function' ? props.t : (key) => key
       const [status, setStatus] = react.useState(null)
       const [branches, setBranches] = react.useState([])
       const [open, setOpen] = react.useState(false)
       const [busy, setBusy] = react.useState(false)
-      const [error, setError] = react.useState('')
+      /** 失败信息：`{ key, detail }`，key 是字典键。 */
+      const [error, setError] = react.useState(null)
       /** 切换成功后的提示（例如"改动已存入 stash"）。 */
       const [notice, setNotice] = react.useState('')
       /**
@@ -90,9 +178,9 @@ window.__ModuleLoader__.load({
       const refresh = react.useCallback(async () => {
         try {
           setStatus(await call('status'))
-          setError('')
+          setError(null)
         } catch (cause) {
-          setError(String(cause.message ?? cause))
+          setError(describeError(cause))
         }
       }, [])
 
@@ -128,7 +216,7 @@ window.__ModuleLoader__.load({
               )
             }
           } catch (cause) {
-            if (alive) setError(String(cause.message ?? cause))
+            if (alive) setError(describeError(cause))
           }
         })()
         return () => {
@@ -148,11 +236,11 @@ window.__ModuleLoader__.load({
               body: JSON.stringify(options?.stash === true ? { branch, stash: true } : { branch }),
             })
             setStatus(next)
-            setError('')
+            setError(null)
             // 暂存过就把 stash 位置告诉用户——否则他会以为改动丢了。
             setNotice(
               next?.stash?.stashed === true
-                ? `改动已存入 stash ${next.stash.ref}，可用 git stash pop 恢复`
+                ? t('stashed', { ref: next.stash.ref })
                 : '',
             )
             // 只有成功才关闭菜单。失败时保持打开，否则用户看不到原因、也不知道
@@ -160,7 +248,7 @@ window.__ModuleLoader__.load({
             setOpen(false)
           } catch (cause) {
             // 把 git 的原始拒绝原因给用户看，而不是替他 stash——那会动到他的工作区。
-            setError(String(cause.message ?? cause))
+            setError(describeError(cause))
           } finally {
             setBusy(false)
           }
@@ -172,7 +260,7 @@ window.__ModuleLoader__.load({
       const toggleOpen = react.useCallback(() => {
         setOpen((value) => {
           if (!value) {
-            setError('')
+            setError(null)
             setNotice('')
           }
           return !value
@@ -228,7 +316,7 @@ window.__ModuleLoader__.load({
           'button',
           {
             type: 'button',
-            title: error === '' ? `Git: ${label}${flags.length ? ' ' + flags.join(' ') : ''}` : error,
+            title: error === null ? `Git: ${label}${flags.length ? ' ' + flags.join(' ') : ''}` : error,
             onClick: toggleOpen,
             style: {
               display: 'inline-flex',
@@ -237,9 +325,9 @@ window.__ModuleLoader__.load({
               padding: '0 8px',
               height: '28px',
               borderRadius: '6px',
-              border: `1px solid ${error === '' ? '#3d3d45' : '#6b3b3b'}`,
+              border: `1px solid ${error === null ? '#3d3d45' : '#6b3b3b'}`,
               background: '#2a2a31',
-              color: error === '' ? '#c8c8d0' : '#e6b0b0',
+              color: error === null ? '#c8c8d0' : '#e6b0b0',
               fontSize: '12px',
               fontFamily: 'ui-monospace, Consolas, monospace',
               whiteSpace: 'nowrap',
@@ -291,12 +379,12 @@ window.__ModuleLoader__.load({
                     marginBottom: '4px',
                   },
                 },
-                busy ? '切换中…' : '切换分支',
+                busy ? t('switching') : t('switchBranch'),
               ),
 
               // 失败原因必须显示在菜单里。原先只写进按钮的 hover 提示，而菜单照常
               // 关闭——用户看到的就是"点了没反应"。
-              error === ''
+              error === null
                 ? null
                 : react.createElement(
                     'div',
@@ -310,22 +398,42 @@ window.__ModuleLoader__.load({
                         color: '#f0c8c8',
                         fontSize: '11.5px',
                         lineHeight: 1.5,
-                        // git 的报错是多行文本，保留换行才有可读性。
-                        whiteSpace: 'pre-wrap',
                         wordBreak: 'break-word',
-                        maxHeight: '130px',
+                        maxHeight: '150px',
                         overflowY: 'auto',
                       },
                     },
-                    error,
+                    // 第一行是本地化短句（跟界面语言走）。
+                    react.createElement('div', null, t(error.key)),
+                    // 下面是 git 的英文原文：它是权威信息，翻译反而失真，所以原样显示。
+                    // 用等宽字体 + 保留换行，多行报错才读得清。
+                    error.detail === ''
+                      ? null
+                      : react.createElement(
+                          'div',
+                          {
+                            style: {
+                              marginTop: '5px',
+                              paddingTop: '5px',
+                              borderTop: '1px solid #4a3030',
+                              fontFamily: 'ui-monospace, Consolas, monospace',
+                              fontSize: '10.5px',
+                              color: '#d8a8a8',
+                              whiteSpace: 'pre-wrap',
+                            },
+                          },
+                          error.detail,
+                        ),
                     react.createElement(
                       'div',
                       { style: { marginTop: '5px', color: '#c9a0a0' } },
-                      '提交这些改动，或用下方的「暂存并切换」。',
+                      t('hintCommitOrStash'),
                     ),
                     // 只在"因未提交改动而被拒"时给出暂存入口：其它失败（例如目标分支
                     // 不存在）暂存也解决不了，给按钮反而误导。
-                    /local changes|would be overwritten/iu.test(error)
+                    // 判据用 host 的稳定 code，而不是去正则匹配 git 的英文原文——
+                    // 后者在不同 git 版本/locale 下会变，且把语言绑死在断定逻辑里。
+                    error.key === 'error_localChanges'
                       ? react.createElement(
                           'button',
                           {
@@ -344,7 +452,7 @@ window.__ModuleLoader__.load({
                               cursor: busy ? 'default' : 'pointer',
                             },
                           },
-                          busy ? '暂存并切换中…' : `暂存改动并切换到 ${pendingBranch}`,
+                          busy ? t('stashing') : t('stashAndSwitch', { branch: pendingBranch }),
                         )
                       : null,
                   ),
@@ -373,7 +481,7 @@ window.__ModuleLoader__.load({
                 ? react.createElement(
                     'div',
                     { style: { padding: '6px 8px', fontSize: '12px', color: '#8a8a93' } },
-                    '没有可切换的分支',
+                    t('noBranches'),
                   )
                 : branches.map((branch) =>
                     react.createElement(
@@ -383,7 +491,7 @@ window.__ModuleLoader__.load({
                         type: 'button',
                         disabled: busy || branch.current,
                         onClick: () => void switchTo(branch.name),
-                        title: branch.isRemote ? '远程分支（切换时会自动创建本地跟踪分支）' : '本地分支',
+                        title: branch.isRemote ? t('remoteBranch') : t('localBranch'),
                         style: {
                           display: 'flex',
                           alignItems: 'center',
@@ -416,14 +524,30 @@ window.__ModuleLoader__.load({
      * @param ctx - 客户端 cordis 上下文。
      */
     function apply(ctx) {
+      // 注册两套字典。与官方客户端插件同一做法：`locale` 是已提供的服务，
+      // 字典挂在自定义命名空间下，`ctx.locale.bind(NS)` 得到按当前语言解析的 `t`。
+      ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'gitbar: dictionaries')
+
       // `slots.inject` 保证目标槽已声明；返回的函数是注销器，交给 `ctx.effect`
       // 绑定到插件生命周期——插件卸载时徽章自动消失。这是官方包一致的写法。
       // 这是 list 槽，注册项必须带 `id`（只有 `key` 会被拒绝：
       // "list slot ... requires options.id"）。`order` 决定它在列表中的位置。
+      //
+      // `locale: NS` 让槽知道本组件用哪个命名空间的字典；`inject` 里的 `t` 是
+      // 按当前语言绑定的翻译函数，会作为 props 传给组件（官方 directory-picker 同此写法）。
       ctx.effect(
         () =>
           ctx.slots.inject(SLOT, () =>
-            ctx.slots.register({ name: SLOT, id: ID, order: ORDER }, BranchChip),
+            ctx.slots.register(
+              {
+                name: SLOT,
+                id: ID,
+                order: ORDER,
+                locale: NS,
+                inject: () => ({ t: ctx.locale.bind(NS) }),
+              },
+              BranchChip,
+            ),
           ),
         'dsh-client-ui-gitbar: branch chip',
       )
@@ -434,7 +558,8 @@ window.__ModuleLoader__.load({
     // 必须声明 inject：cordis 的服务是懒解析的，不声明就直接读 `ctx.slots` 会抛
     // "cannot get property \"slots\" without inject"，而且这个错误会让**整个界面**
     // 渲染失败（不只是本插件）——排查时页面是全白的，误导性很强。
-    exports.inject = ['slots']
+    // `locale` 同理：不声明就取不到 `ctx.locale.register`。
+    exports.inject = ['slots', 'locale']
     return module.exports
   },
 })
