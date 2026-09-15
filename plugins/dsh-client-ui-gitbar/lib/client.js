@@ -179,6 +179,33 @@ window.__ModuleLoader__.load({
         })
       }, [])
 
+      // 点击组件之外关闭菜单——这是标准交互，缺了它用户会觉得"弹框关不掉"。
+      //
+      // 用 mousedown 而不是 click：click 在 mouseup 之后才触发，中间可能已经有别的
+      // 事情发生（例如拖选文本）。判定用"点击目标是否在容器内"，因此点菜单内部
+      // 不会误关。
+      //
+      // 依赖数组里带 open：只在打开期间挂监听，关闭时立刻摘掉，不给文档留常驻监听。
+      const containerRef = react.useRef(null)
+      react.useEffect(() => {
+        if (!open) return undefined
+
+        const onPointerDown = (event) => {
+          const node = containerRef.current
+          if (node !== null && !node.contains(event.target)) setOpen(false)
+        }
+        const onKeyDown = (event) => {
+          if (event.key === 'Escape') setOpen(false)
+        }
+
+        document.addEventListener('mousedown', onPointerDown, true)
+        document.addEventListener('keydown', onKeyDown)
+        return () => {
+          document.removeEventListener('mousedown', onPointerDown, true)
+          document.removeEventListener('keydown', onKeyDown)
+        }
+      }, [open])
+
       if (status === null) {
         // 还没有数据时渲染 null 而不是占位骨架：这个位置空间很小，
         // 一个闪烁的骨架比"晚半秒出现"更惹眼。
@@ -195,7 +222,8 @@ window.__ModuleLoader__.load({
 
       return react.createElement(
         'div',
-        { style: { position: 'relative', display: 'inline-flex' } },
+        // ref 用于"点击外部关闭"的判定：在这个容器内的点击不关菜单。
+        { ref: containerRef, style: { position: 'relative', display: 'inline-flex' } },
         react.createElement(
           'button',
           {
