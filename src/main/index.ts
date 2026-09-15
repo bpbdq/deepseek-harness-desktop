@@ -175,8 +175,10 @@ async function main(): Promise<void> {
     if (existsSync(archivePath)) {
       try {
         let lastPercent = -1
-        const result = await ensureRuntimeUnpacked(archivePath, userDataDir, (done, total) => {
-          const percent = Math.floor((done / Math.max(total, 1)) * 100)
+        const result = await ensureRuntimeUnpacked(archivePath, userDataDir, (readBytes, archiveBytes) => {
+          // 钳制到 0-100：即使将来某一侧传参的量纲又不一致，也只是进度条不精确，
+          // 不会再显示出 "444%" 这种明显错误的数字（真发生过）。
+          const percent = Math.min(100, Math.max(0, Math.floor((readBytes / Math.max(archiveBytes, 1)) * 100)))
           // 只在百分比变化时重写加载页，避免每个数据块都触发一次页面重载。
           if (percent === lastPercent) return
           lastPercent = percent

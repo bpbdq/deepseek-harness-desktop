@@ -59,13 +59,11 @@ class ArchiveReader {
 
   /** 已落盘的文件数。 */
   files = 0
-  /** 已落盘的总字节数。 */
+  /** 已落盘的总字节数（解压后的原始大小）。 */
   bytes = 0
 
   constructor(
     private readonly root: string,
-    private readonly onProgress?: (doneBytes: number, totalBytes: number) => void,
-    private readonly totalBytes = 0,
   ) {}
 
   /** 是否已经读到结束哨兵。 */
@@ -155,7 +153,8 @@ class ArchiveReader {
     writeFileSync(target, content, { mode: record.mode })
     this.files += 1
     this.bytes += content.length
-    this.onProgress?.(this.bytes, this.totalBytes)
+    // 注意：这里**不**上报进度。解压后的字节数与归档大小不是同一量纲，用它算百分比
+    // 会得到 400% 以上。进度由调用方按"已读取的归档字节"上报。
   }
 }
 
@@ -189,13 +188,14 @@ export function reusableUnpacked(dir: string, archivePath: string): string | und
  *
  * @param archivePath - `resources/runtime.br` 的绝对路径。
  * @param userDataDir - 应用数据目录（解包到其下的 `bundled-runtime/`）。
- * @param onProgress - 进度回调（已写字节数、归档总字节数）。
+ * @param onProgress - 进度回调。参数是**已读取的归档字节数**与归档总大小，同一量纲，
+ *   百分比因此必然在 0-100 之间。
  * @returns 解包结果。
  */
 export async function ensureRuntimeUnpacked(
   archivePath: string,
   userDataDir: string,
-  onProgress?: (doneBytes: number, totalBytes: number) => void,
+  onProgress?: (readBytes: number, archiveBytes: number) => void,
 ): Promise<UnpackResult> {
   const dir = join(userDataDir, UNPACKED_DIRNAME)
 
@@ -208,12 +208,21 @@ export async function ensureRuntimeUnpacked(
   const root = join(dir, 'runtime')
   mkdirSync(root, { recursive: true })
 
-  const reader = new ArchiveReader(root, onProgress, archiveStats.size)
+  const reader = new ArchiveReader(root)
   const decompress = createBrotliDecompress()
 
+  // 进度按**已读取的归档字节**上报：这与归档总大小同一量纲，百分比因此必然落在 0-100。
+  //
+  // 踩过的坑：最初用"已写出的解压后字节数"除以归档总大小，界面显示到 444%
+  // （197.6 MB 除以 42.9 MB）。两个量纲不同的数不能相比。
+  let readBytes = 0
   await new Promise<void>((resolve, reject) => {
     const source = createReadStream(archivePath)
     source.on('error', reject)
+    source.on('data', (chunk: Buffer | string) => {
+      readBytes += typeof chunk === 'string' ? Buffer.byteLength(chunk) : chunk.length
+      onProgress?.(readBytes, archiveStats.size)
+    })
     decompress.on('error', reject)
     decompress.on('data', (chunk: Buffer) => {
       try {

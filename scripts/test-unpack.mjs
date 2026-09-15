@@ -19,6 +19,22 @@ if (!existsSync(ARCHIVE)) {
 const archiveMb = statSync(ARCHIVE).size / 1048576
 console.log(`归档: ${archiveMb.toFixed(1)} MB`)
 
+// 归档完整性：与 build/runtime.json 里记录的字节数比对。
+//
+// 这条断言是补上的：归档曾被截断成 21.5 MB（应为 42.9 MB），而测试只报了一句
+// "unexpected end of file"——虽然解包器的报错行为是对的，但那时才发现的代价是
+// 又要等 11 分钟重新压缩。体积不符说明归档本身就不完整，应当先被挡下。
+const expected = JSON.parse(readFileSync(join(process.cwd(), 'build', 'runtime.json'), 'utf8'))
+const actualBytes = statSync(ARCHIVE).size
+if (expected.archiveBytes !== actualBytes) {
+  console.error(
+    `归档体积与 runtime.json 记录不符：实际 ${(actualBytes / 1048576).toFixed(1)} MB，` +
+      `记录 ${(expected.archiveBytes / 1048576).toFixed(1)} MB。归档可能被截断，请重新运行 compress-runtime.mjs。`,
+  )
+  process.exit(1)
+}
+console.log(`  与 runtime.json 一致（${expected.files} 个文件 / ${(expected.rawBytes / 1048576).toFixed(1)} MB 原始）`)
+
 const scratch = mkdtempSync(join(tmpdir(), 'dsh-unpack-'))
 let failures = 0
 const check = (label, actual, expected) => {
@@ -29,17 +45,25 @@ const check = (label, actual, expected) => {
 
 try {
   // 1) 首次解包
-  let lastPercent = -1
+  //
+  // 顺带断言进度百分比的取值范围。这条断言是补上的：早先进度用"解压后字节数"除以
+  // "归档大小"（197.6 MB / 42.9 MB），界面显示到 444%，而当时的测试只验证了"能解包"、
+  // 没有验证进度是否合理，所以没能发现。
+  const percents = []
   const started = Date.now()
-  const first = await ensureRuntimeUnpacked(ARCHIVE, scratch, (done, total) => {
-    const percent = Math.floor((done / Math.max(total, 1)) * 100)
-    if (percent !== lastPercent && percent % 20 === 0) lastPercent = percent
+  const first = await ensureRuntimeUnpacked(ARCHIVE, scratch, (readBytes, archiveBytes) => {
+    percents.push((readBytes / Math.max(archiveBytes, 1)) * 100)
   })
   const seconds = (Date.now() - started) / 1000
 
   console.log('')
   console.log(`首次解包: ${seconds.toFixed(1)}s  文件 ${first.files} 个`)
   check('标记为已解包', first.unpacked, 'true')
+  check('进度回调被调用', percents.length > 0, 'true')
+  check('进度最大值不超过 100', Math.max(...percents) <= 100, 'true')
+  check('进度最小值不小于 0', Math.min(...percents) >= 0, 'true')
+  check('进度最终接近 100', Math.round(percents[percents.length - 1]) >= 99, 'true')
+  console.log(`       进度采样 ${percents.length} 次，峰值 ${Math.max(...percents).toFixed(1)}%`)
   check('node 可执行文件存在', existsSync(join(first.dir, 'runtime', 'node', 'node.exe')), 'true')
   check(
     'dsh 锚点存在',
