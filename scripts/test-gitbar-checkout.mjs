@@ -11,7 +11,7 @@
 //   3. 干净工作区带 stash -> 400 nothing to stash（界面不该出现这个按钮，但接口要稳）
 //   4. 非法分支名        -> 400，安全边界
 import { execFile, execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawn } from 'node:child_process'
@@ -92,8 +92,29 @@ try {
   }
   if (base === undefined) throw new Error('服务端未就绪')
 
+  // 登记这个临时仓库。
+  //
+  // 现在 host 只接受**已登记**的工作区（安全边界：不能让页面命令 host 对任意目录跑
+  // git），而契约也要求每次请求带 `cwd`。因此测试必须先把临时仓库写进应用侧的工作区
+  // 表；否则请求会被正确拒绝，测试就测不到切换本身。
+  //
+  // 在服务端就绪**之后**写：dsh 启动时会读这份文件，预置它不认识的结构会让启动失败。
+  mkdirSync(join(home, 'storages'), { recursive: true })
+  writeFileSync(
+    join(home, 'storages', 'workspace.json'),
+    JSON.stringify(
+      {
+        unit: { name: 'workspace', version: 2 },
+        global: { initialized: true, workspaceIds: [], archivedSessionIds: [] },
+        tables: { workspaces: { w1: { path: repo } } },
+      },
+      null,
+      2,
+    ) + '\n',
+  )
+
   const post = (body) =>
-    fetch(`${base}/dsh-desktop/gitbar/checkout`, {
+    fetch(`${base}/dsh-desktop/gitbar/checkout?cwd=${encodeURIComponent(repo)}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
