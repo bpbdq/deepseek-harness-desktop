@@ -56,3 +56,7 @@ COMMIT_MSG.txt
 .codecs.*
 .measure.*
 .aggr.*
+
+# 运行时压缩归档是构建产物：由 npm run stage 的 compress:runtime 生成，不入库
+build/runtime.br
+build/runtime.json
