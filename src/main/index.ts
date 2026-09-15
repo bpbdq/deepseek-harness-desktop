@@ -8,7 +8,7 @@
  * The heavy lifting (sandboxing, tools, sessions, jobs, subagents) all happens in
  * the child; this process is a shell and never runs agent code.
  */
-import { existsSync, mkdirSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { BrowserWindow, Menu, Tray, app, clipboard, dialog, ipcMain, nativeTheme, shell } from 'electron'
 
@@ -77,13 +77,38 @@ if (!app.requestSingleInstanceLock()) {
 /**
  * 决定智能体把哪个目录当作工作区。
  *
- * 优先级：命令行显式参数 > 上次记住的选择 > 用户主目录。dsh 的启动器把"调用时
- * 所在目录"当作默认工作区根，这里保持同样的直觉。
+ * 优先级：**切换意图 > 命令行参数 > 上次记住的选择 > 用户主目录**。
+ *
+ * 为什么"切换意图"要排在命令行参数之前：`app.relaunch()` 会沿用原来的命令行，
+ * 而菜单里的「打开文件夹」正是靠重启来生效的。于是重启后 argv 里带着**旧**工作区，
+ * 把用户刚选的新路径盖掉——表现为"重启了但还是老目录"（实测踩到过）。
+ * 因此切换时通过环境变量显式传出目标，它在本次启动里优先级最高。
+ *
  * @param argv - 本次启动的 `process.argv`。
  * @param userDataDir - Electron 的每用户数据目录。
  * @returns 工作区绝对路径。
  */
 function resolveWorkspace(argv: string[], userDataDir: string): string {
+  // 1) 菜单切换工作区时留下的"待切换"标记，只对紧接着的那一次启动有效。
+  //
+  // 用文件而不是环境变量：`app.relaunch()` 是否继承当前环境并不由我们保证，而文件
+  // 一定跨得过重启。读到即删，避免它影响后续启动。
+  const pendingPath = join(userDataDir, 'pending-workspace')
+  if (existsSync(pendingPath)) {
+    try {
+      const requested = readFileSync(pendingPath, 'utf8').trim()
+      rmSync(pendingPath, { force: true })
+      const normalized = requested === '' ? undefined : normalizeWorkspaceArgument(requested)
+      if (normalized !== undefined) {
+        switchWorkspace(userDataDir, normalized)
+        return normalized
+      }
+    } catch (error) {
+      // 标记文件坏掉不该阻止启动——回落到常规解析。
+      console.warn(`[shell] 无法读取待切换工作区: ${String(error)}`)
+    }
+  }
+
   const fromArgv = argv.slice(1).find((token) => !token.startsWith('--') && !token.startsWith('-'))
   if (fromArgv !== undefined) {
     const normalized = normalizeWorkspaceArgument(fromArgv)
@@ -352,6 +377,16 @@ function createWorkspaceActions(deps: {
   const applyWorkspace = (dir: string): void => {
     switchWorkspace(userDataDir, dir)
     if (session !== undefined) session.quitting = true
+    // 把目标工作区写成一个"待切换"标记，交给重启后的进程读取。
+    //
+    // 不能只依赖 settings.json：`app.relaunch()` 会沿用原来的命令行，而 argv 里的
+    // 旧工作区优先级高于记住的选择，会把这次切换盖掉（实测表现为"重启了但还是老
+    // 目录"）。标记文件在启动时被读取并删除，只对紧接着的那一次生效。
+    try {
+      writeFileSync(join(userDataDir, 'pending-workspace'), `${dir}\n`)
+    } catch (error) {
+      console.warn(`[shell] 无法写入待切换工作区: ${String(error)}`)
+    }
     // 先停子进程再重启，避免重启瞬间两个服务端争用同一个 harness home。
     void server.stop(2000).finally(() => {
       app.relaunch()
