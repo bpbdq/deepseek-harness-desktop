@@ -1,24 +1,29 @@
 // 发布一个新版本：递增版本号、提交、打标签、推送，并触发 CI。
 //
 //   node scripts/release.mjs              按递增序列发下一个版本（1.0.0 → 1.0.1 → …）
-//   node scripts/release.mjs 1.1.0        显式指定版本号
+//   node scripts/release.mjs 1.0.3        指定版本号，但**必须**与序列一致
+//   node scripts/release.mjs 2.0.0 --force 真正需要跳出序列时才用
 //   node scripts/release.mjs --dry-run    只打印将要发生的事，不改任何东西
 //
-// 存在的理由：手工发布踩过一次严重的坑——先 `version.mjs next`（得到 1.0.1），
-// 却把标签打成了 `v1.1.0`。结果 CI 会构建出 1.0.1 的安装包、挂到名为 v1.1.0 的
-// Release 上，而自动更新的 metadata 里写的版本号与标签不符，用户会收到"有新版本"
-// 却永远装不上。这类"标签与内容不一致"的错误从外部看不出来，必须机器校验。
+// 存在的理由：手工发布踩过两次严重的坑。
 //
-// 因此本脚本在打标签之前**强制**核对：
+//   1. 先 `version.mjs next`（得到 1.0.1），却把标签打成了 `v1.1.0`。结果 CI 构建出
+//      1.0.1 的安装包、挂到名为 v1.1.0 的 Release 上，自动更新 metadata 里的版本号
+//      与标签不符，用户会收到"有新版本"却永远装不上。
+//   2. 用显式版本号跳过了整段补丁号（1.1.0 → 1.2.0，跳掉 1.1.1…1.1.9）。
+//      本项目的规则是**先在次版本内走完补丁号**：1.0.0 → … → 1.0.9 → 1.1.0。
+//
+// 所以本脚本在打标签之前强制核对：
 //   * package.json 的 version 与要打的标签一致
 //   * package-lock.json 同步（否则 CI 的 npm ci 会失败）
 //   * package.json 已提交（未提交时 CI 拿到的是旧版本号）
+//   * 显式指定的版本号必须等于序列给出的下一个版本，除非显式加了 --force
 import { execFileSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
 import { next, readVersion, writeVersion } from './version.mjs'
 
 const args = process.argv.slice(2)
 const dryRun = args.includes('--dry-run')
+const force = args.includes('--force')
 const explicit = args.find((token) => !token.startsWith('-'))
 
 /** 跑一条 git 命令并返回输出。 */
@@ -36,7 +41,8 @@ function gitWithProxy(...argv) {
 }
 
 const current = readVersion()
-const target = explicit ?? next(current)
+const expected = next(current)
+const target = explicit ?? expected
 
 // 校验显式版本号格式；next() 已经保证格式。
 if (explicit !== undefined && !/^\d+\.\d+\.\d+$/u.test(explicit)) {
@@ -44,10 +50,24 @@ if (explicit !== undefined && !/^\d+\.\d+\.\d+$/u.test(explicit)) {
   process.exit(1)
 }
 
-const tag = `v${target}`
 console.log(`当前版本: ${current}`)
+console.log(`序列下一个: ${expected}`)
 console.log(`目标版本: ${target}`)
-console.log(`标签    : ${tag}`)
+console.log(`标签    : v${target}`)
+
+// 拦截"跳过补丁号"。这是本脚本最重要的一条约束：版本序列要可预期，否则用户看到
+// 一堆跳号会怀疑是不是漏发了版本。
+if (target !== expected && !force) {
+  console.error('')
+  console.error(`拒绝发布：${target} 跳过了序列中的 ${expected}。`)
+  console.error('')
+  console.error(`本项目的规则是先在次版本内走完补丁号：`)
+  console.error(`  1.0.0 -> 1.0.1 -> … -> 1.0.9 -> 1.1.0 -> 1.1.1 -> … -> 1.1.9 -> 1.2.0`)
+  console.error('')
+  console.error(`想按序列发布请直接运行：node scripts/release.mjs`)
+  console.error(`确实需要跳出序列（例如大版本）才加 --force：node scripts/release.mjs ${target} --force`)
+  process.exit(1)
+}
 
 // 工作区必须干净：否则"提交了什么"说不清，标签与内容的一致性也无法保证。
 const dirty = git('status', '--porcelain')
@@ -57,9 +77,9 @@ if (dirty !== '') {
   process.exit(1)
 }
 
-const existing = git('tag', '--list', tag)
+const existing = git('tag', '--list', `v${target}`)
 if (existing !== '') {
-  console.error(`\n标签 ${tag} 已存在。发布下一个版本请用：node scripts/release.mjs`)
+  console.error(`\n标签 v${target} 已存在。发布下一个版本请用：node scripts/release.mjs`)
   process.exit(1)
 }
 
@@ -67,7 +87,7 @@ if (dryRun) {
   console.log('\n--dry-run：将执行以下步骤，但不做任何改动')
   console.log(`  1. 把 package.json / package-lock.json 的版本改为 ${target}`)
   console.log(`  2. git commit -m "release: ${target}"`)
-  console.log(`  3. git tag -a ${tag}`)
+  console.log(`  3. git tag -a v${target}`)
   console.log('  4. push master 与标签（触发 CI 构建并发布 Release）')
   process.exit(0)
 }
@@ -91,11 +111,11 @@ if (committedVersion !== target) {
   process.exit(1)
 }
 
-git('tag', '-a', tag, '-m', `dsh-desktop ${target}`)
+git('tag', '-a', `v${target}`, '-m', `dsh-desktop ${target}`)
 console.log('\n已提交并打标签，正在推送 …')
 gitWithProxy('push', 'origin', 'master')
-gitWithProxy('push', 'origin', tag)
+gitWithProxy('push', 'origin', `v${target}`)
 
-console.log(`\n完成：${tag}（提交 ${git('rev-parse', '--short', 'HEAD')}）`)
+console.log(`\n完成：v${target}（提交 ${git('rev-parse', '--short', 'HEAD')}）`)
 console.log('CI 会构建三平台并直接发布 Release，可用以下命令查看进度：')
 console.log('  node scripts/ci-status.mjs')
