@@ -458,6 +458,39 @@ function createReviewHandler() {
         return
       }
 
+      // ---- 提交历史：项目级面板用 -------------------------------------------
+      //
+      // 项目面板只显示"当前有什么改动"不够——用户还需要"最近发生过什么"。这里给出
+      // 最近的提交记录。之所以放在本插件（而不是新开一个），是因为它服务于同一块面板，
+      // 且同样需要"只读、按工作区解析"这两条既有约束。
+      if (url.pathname === `${ROUTE_PREFIX}/history`) {
+        if (!(await isRepo(workspace))) {
+          sendJson(response, 200, { isRepo: false })
+          return
+        }
+        const limitRaw = Number(payload.limit ?? 20)
+        const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(Math.trunc(limitRaw), 1), 100) : 20
+        // %x1f（单元分隔符）与 %x1e（记录分隔符）——用它们而不是 \t/\n，因为提交标题
+        // 里可能含制表符，而 author 名里可能含各种空白。
+        const raw = await git(
+          ['log', `-${limit}`, '--date=short', '--pretty=format:%H%x1f%h%x1f%an%x1f%ad%x1f%s%x1e'],
+          workspace,
+        )
+        const commits = raw
+          .split('\x1e')
+          .map((record) => record.trim())
+          .filter((record) => record !== '')
+          .map((record) => {
+            const [hash, short, author, date, ...rest] = record.split('\x1f')
+            return { hash, short, author, date, subject: rest.join('\x1f') }
+          })
+        const branch = (
+          await git(['rev-parse', '--abbrev-ref', 'HEAD'], workspace).catch(() => '')
+        ).trim()
+        sendJson(response, 200, { isRepo: true, branch, commits })
+        return
+      }
+
       sendJson(response, 404, { error: 'not found' })
     } catch (error) {
       // 任何未预期错误都转成 JSON，避免客户端拿到 HTML 错误页而无法解析。
@@ -477,6 +510,7 @@ export function apply(ctx) {
     `${ROUTE_PREFIX}/changes`,
     `${ROUTE_PREFIX}/workspace`,
     `${ROUTE_PREFIX}/revert`,
+    `${ROUTE_PREFIX}/history`,
   ]) {
     ctx.effect(() => ctx.webServer.register({ kind: 'exact', path, handler }), `review: ${path}`)
   }

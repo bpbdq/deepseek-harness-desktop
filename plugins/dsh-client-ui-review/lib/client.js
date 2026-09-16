@@ -80,6 +80,8 @@ window.__ModuleLoader__.load({
       revertConfirm: '确认还原',
       reverting: '还原中…',
       revertFailed: '还原失败：{message}',
+      historyTitle: '最近提交',
+      noHistory: '这个仓库还没有任何提交。',
       loading: '正在读取差异…',
       truncated: '差异过大，仅显示前一部分。',
       openInSidebar: '在侧边栏查看',
@@ -109,6 +111,8 @@ window.__ModuleLoader__.load({
       revertConfirm: 'Confirm revert',
       reverting: 'Reverting…',
       revertFailed: 'Revert failed: {message}',
+      historyTitle: 'Recent commits',
+      noHistory: 'This repository has no commits yet.',
       loading: 'Loading diff…',
       truncated: 'The diff is large; only the beginning is shown.',
       openInSidebar: 'Open in sidebar',
@@ -347,6 +351,93 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * 读取工作区的提交历史（最近若干条）。
+     *
+     * 项目面板只显示"当前有什么改动"不够——用户还需要"最近发生过什么"。
+     * @param workspace - 工作区路径。
+     * @returns `{ state, reload }`。
+     */
+    function useHistory(workspace) {
+      const [state, setState] = react.useState({ phase: 'loading' })
+
+      const reload = react.useCallback(async () => {
+        if (workspace === undefined) return
+        try {
+          const result = await call('history', { workspace, limit: 20 })
+          setState({ phase: 'ready', result })
+        } catch (cause) {
+          setState({ phase: 'error', message: String(cause.message ?? cause) })
+        }
+      }, [workspace])
+
+      react.useEffect(() => {
+        void reload()
+      }, [reload])
+
+      return { state, reload }
+    }
+
+    /**
+     * 提交历史列表：一次显示固定条数，不翻页。
+     *
+     * 刻意不做分页/无限滚动：面板的用途是"快速回顾最近发生了什么"，而不是替代 git 客户端。
+     * 需要更早的历史时，用户会在终端里用 git log。
+     * @param props - `{ t, result, phase, message }`。
+     */
+    function HistoryList(props) {
+      const { t, result, phase, message } = props
+      if (phase === 'loading') {
+        return react.createElement('div', { style: { color: 'var(--dsw-alias-label-tertiary)', fontSize: '12px' } }, t('loading'))
+      }
+      if (phase === 'error') {
+        return react.createElement('div', { style: { color: '#f0c8c8', fontSize: '12px' } }, message)
+      }
+      if (result?.isRepo === false) {
+        return react.createElement('div', { style: { color: 'var(--dsw-alias-label-tertiary)', fontSize: '12px' } }, t('notRepo'))
+      }
+      const commits = result?.commits ?? []
+      if (commits.length === 0) {
+        return react.createElement('div', { style: { color: 'var(--dsw-alias-label-tertiary)', fontSize: '12px' } }, t('noHistory'))
+      }
+      return react.createElement(
+        'div',
+        { style: { display: 'flex', flexDirection: 'column', gap: '4px' } },
+        commits.map((commit) =>
+          react.createElement(
+            'div',
+            {
+              key: commit.hash,
+              title: `${commit.hash}\n${commit.author} · ${commit.date}`,
+              style: {
+                display: 'flex',
+                gap: '8px',
+                alignItems: 'baseline',
+                fontSize: '11.5px',
+                fontFamily: 'ui-monospace, Consolas, monospace',
+                lineHeight: '1.5',
+              },
+            },
+            react.createElement(
+              'span',
+              { style: { color: '#9db8e8', flex: '0 0 auto' } },
+              commit.short,
+            ),
+            react.createElement(
+              'span',
+              { style: { color: 'var(--dsw-alias-label-tertiary)', flex: '0 0 auto' } },
+              commit.date,
+            ),
+            react.createElement(
+              'span',
+              { style: { color: 'var(--dsw-alias-label-primary)', minWidth: 0, wordBreak: 'break-word' } },
+              commit.subject,
+            ),
+          ),
+        ),
+      )
+    }
+
+    /**
      * 常驻的右侧面板。
      *
      * 自绘而不是用官方右侧栏：官方那套内容槽带 `scope: "session"`，在项目页（没有会话）
@@ -363,6 +454,8 @@ window.__ModuleLoader__.load({
       // 两种语义分别取数据：本轮改动需要会话，工作区改动不需要。
       const turn = useChanges(scope === 'workspace' ? undefined : workspace, sessionId)
       const workspaceChanges = useWorkspaceChanges(scope === 'workspace' ? workspace : undefined)
+      // 历史只在项目级取：会话内的标签与提交历史无关，没必要多打一次 git。
+      const history = useHistory(scope === 'workspace' ? workspace : undefined)
       const active = scope === 'workspace' ? workspaceChanges.state : turn.state
 
       if (!open) return null
@@ -468,6 +561,24 @@ window.__ModuleLoader__.load({
             sessionId,
             onChanged: scope === 'workspace' ? workspaceChanges.reload : turn.reload,
           }),
+          // 提交历史只在项目级面板出现：会话内的标签讲的是"本轮"，与历史无关。
+          scope === 'workspace'
+            ? react.createElement(
+                'div',
+                { style: { marginTop: '14px', paddingTop: '10px', borderTop: '1px solid var(--dsw-alias-border-l1, #2f2f36)' } },
+                react.createElement(
+                  'div',
+                  { style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', marginBottom: '6px' } },
+                  t('historyTitle'),
+                ),
+                react.createElement(HistoryList, {
+                  t,
+                  result: history.state.result,
+                  phase: history.state.phase,
+                  message: history.state.message,
+                }),
+              )
+            : null,
         ),
       )
     }

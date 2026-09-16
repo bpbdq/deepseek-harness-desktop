@@ -185,6 +185,26 @@ try {
   check('6e) 还原后的文件从列表消失', afterRevert.has('modify.txt'), 'false')
   check('   其它改动仍在列表里', afterRevert.has('added.txt'), 'true')
 
+  // ---- 7. 提交历史 ---------------------------------------------------------
+  console.log('')
+  console.log('--- 提交历史 ---')
+  res = await call('/dsh-desktop/review/history', { workspace, sessionId: session, limit: 5 })
+  json = await res.json()
+  check('7) 取历史成功', res.status, 200)
+  check('   返回分支名', typeof json.branch === 'string' && json.branch !== '', 'true')
+  check('   返回提交条数上限生效', (json.commits ?? []).length <= 5, 'true')
+  const first = (json.commits ?? [])[0]
+  check('   提交含短哈希', typeof first?.short === 'string' && first.short.length > 0, 'true')
+  check('   提交含日期与作者', typeof first?.date === 'string' && typeof first?.author === 'string', 'true')
+  check('   提交含标题', typeof first?.subject === 'string' && first.subject.length > 0, 'true')
+  console.log(`       最新提交: ${first?.short} ${first?.date} ${first?.subject}`)
+
+  // 未登记的工作区同样要被拒——历史与改动走同一条安全边界。
+  const otherRepo = mkdtempSync(join(tmpdir(), 'dsh-review-hist-'))
+  res = await call('/dsh-desktop/review/history', { workspace: otherRepo, sessionId: session })
+  check('7b) 未登记工作区取历史 -> 400', res.status, 400)
+  rmSync(otherRepo, { recursive: true, force: true })
+
   // ---- 4. 未登记的工作区 ---------------------------------------------------
   const other = mkdtempSync(join(tmpdir(), 'dsh-review-other-'))
   res = await call('/dsh-desktop/review/changes', { workspace: other, sessionId: session })
