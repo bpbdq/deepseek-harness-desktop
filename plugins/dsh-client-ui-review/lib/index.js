@@ -26,8 +26,9 @@ export const inject = ['webServer']
 /** 路由前缀，与 gitbar 的做法一致，便于分辨"这是外壳侧插件提供的"。 */
 const ROUTE_PREFIX = '/dsh-desktop/review'
 
-/** git 命令超时。快照要遍历工作区，大仓库可能偏慢，故比 gitbar 宽松。 */
-const GIT_TIMEOUT_MS = 30000
+/** git 命令超时。**基线快照要遍历整个工作区，实测在带大量未跟踪文件的仓库上接近 100 秒**，
+ * 因此这里给足余量；而每次轮询走的"只哈希变化文件"路径是毫秒级的。 */
+const GIT_TIMEOUT_MS = 240000
 
 /** 单个响应的差异文本上限，避免超大改动把面板压垮。 */
 const MAX_DIFF_BYTES = 512 * 1024
@@ -137,7 +138,35 @@ function indexFor(sessionId) {
 }
 
 /**
- * 给工作区拍一张快照，返回树对象 SHA。
+ * 给"当前工作区"建一棵树，复用**常驻索引**以利用 git 的 stat 缓存。
+ *
+ * 这是本模块性能的关键。每次轮询都从零构建索引（read-tree + add -A）会让 git 对所有
+ * 未变文件重新计算哈希；实测在一个 6640 条变化路径的仓库上每次约 0.8 秒，而客户端每
+ * 4 秒轮询一次，代价不必要地高。
+ *
+ * 换成常驻索引后：索引里保留了上次的 stat 数据，`git add -A` 只会重新哈希**真正变化**
+ * 的文件，其余按 mtime 直接跳过。首次调用（索引不存在）退化为全量构建，之后每次都快。
+ *
+ * @param workspace - 工作区路径。
+ * @param sessionId - 会话标识。
+ * @returns 当前工作区的树对象 SHA。
+ */
+async function currentTree(workspace, sessionId) {
+  const indexPath = indexFor(`${sessionId}-current`)
+  const env = { GIT_INDEX_FILE: indexPath }
+  // 索引首次使用（或损坏）时从 HEAD 起一个基准，让后续的 add -A 有比较对象。
+  if (!existsSync(indexPath)) {
+    await git(['read-tree', 'HEAD'], workspace, env).catch(() => undefined)
+  }
+  await git(['add', '-A'], workspace, env)
+  return (await git(['write-tree'], workspace, env)).trim()
+}
+
+/**
+ * 给工作区拍一张完整快照（遍历整棵树），返回树对象 SHA。
+ *
+ * **只在记录基线时调用一次**：它要遍历整个工作区，代价与未跟踪文件数量成正比。
+ * 实测在带 6635 个未跟踪文件的仓库上约 92 秒，因此绝不能放进轮询路径。
  *
  * 全程只读：git 只写我们自己指定的临时 index，不动仓库状态。
  * @param workspace - 已校验的工作区路径。
@@ -234,7 +263,7 @@ function createReviewHandler() {
 
       const sessionId = typeof payload.sessionId === 'string' ? payload.sessionId : 'default'
 
-      // ---- 记录基线：本轮开始时调用 ----------------------------------------
+      // ---- 记录基线：本轮开始时调用一次 ------------------------------------
       if (url.pathname === `${ROUTE_PREFIX}/baseline`) {
         if (request.method !== 'POST') {
           response.setHeader('allow', 'POST')
@@ -246,6 +275,10 @@ function createReviewHandler() {
           return
         }
         const revision = await snapshot(workspace, sessionId)
+        // 顺手把"当前侧"的常驻索引也建起来，让第一次取差异就不必再付一次全量代价。
+        // 不做这一步的话，首次 add -A 要重新哈希所有变化文件（实测约 4 秒），
+        // 而它发生在用户刚点开面板时——最不该等的那一刻。
+        await currentTree(workspace, sessionId).catch(() => undefined)
         baselines.set(sessionId, { revision, workspace, takenAt: Date.now() })
         sendJson(response, 200, { isRepo: true, revision, workspace })
         return
@@ -268,8 +301,13 @@ function createReviewHandler() {
           return
         }
 
-        // 重新拍一张当前快照，与基线比对。基线本身始终不动。
-        const current = await snapshot(workspace, `${sessionId}-current`)
+        // 当前侧的树：用**常驻索引**构建，git 借此跳过未变文件（见 currentTree 的说明）。
+        //
+        // 早先试过"先算出变化路径、只哈希它们"，但收窄没有效果：那个仓库里 tmp/ 下的
+        // 6636 个日志文件其实是被 git 跟踪的（只是工作区副本未提交），因此基线快照本来
+        // 就把它们算了进去，收窄集合依然是 6640 条。让索引保持热才是真正的办法。
+        const current = await currentTree(workspace, sessionId)
+
         const [stat, names, diff] = await Promise.all([
           git(['diff', '--numstat', stored.revision, current], workspace),
           git(['diff', '--name-status', stored.revision, current], workspace),

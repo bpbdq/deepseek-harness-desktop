@@ -35,8 +35,12 @@ window.__ModuleLoader__.load({
     /** 路由前缀，与 host 半边一致。 */
     const API = '/dsh-desktop/review'
 
-    /** 状态轮询间隔：agent 改动文件后要让计数跟上。 */
-    const POLL_MS = 4000
+    /** 状态轮询间隔。
+     *
+     * 取 10 秒而不是更短：每次轮询都要让宿主在 git 里核对工作区状态，而"本轮改了几个
+     * 文件"晚几秒更新完全无感。实测轮询路径约 0.5 秒，10 秒间隔意味着对仓库持续施加的
+     * 负载很低。 */
+    const POLL_MS = 10000
 
     const zh = {
       idle: '本轮暂无改动',
@@ -366,6 +370,16 @@ window.__ModuleLoader__.load({
       }, [running, workspace, sessionId])
 
       // 定期刷新改动文件数（agent 改文件后计数要跟上）。
+      //
+      // 顺带承担基线自愈：若宿主说"没有基线"而当前又不在运行，就立刻补记一个。
+      //
+      // 为什么需要自愈：基线原本只在"空闲 -> 运行"的那一次跃迁上记录，这有两个漏掉的
+      // 场景——(1) 挂载时该轮已经在跑（应用启动或切会话时 agent 正在工作），跃迁永远
+      // 不发生；(2) 记录请求失败后再无重试。两者都会让面板一直显示"本轮暂无改动"，
+      // 而实际明明改了文件（这是用户报告的现象）。
+      //
+      // 空闲时补记是安全的：agent 不在运行就不可能产生改动，因此这一刻的状态正是
+      // "下一轮开始前"的状态。
       react.useEffect(() => {
         if (workspace === undefined || sessionId === undefined) return undefined
         let alive = true
@@ -373,6 +387,11 @@ window.__ModuleLoader__.load({
           try {
             const result = await call('changes', { workspace, sessionId })
             if (!alive) return
+            if (result?.noBaseline === true && !running) {
+              // 先补记再显示：这一帧的计数会由下一次轮询填上。
+              await call('baseline', { workspace, sessionId }).catch(() => undefined)
+              return
+            }
             setCount(result?.isRepo === false || result?.noBaseline === true ? null : (result?.files?.length ?? 0))
             setTrouble('')
           } catch (cause) {
@@ -385,7 +404,7 @@ window.__ModuleLoader__.load({
           alive = false
           clearInterval(timer)
         }
-      }, [workspace, sessionId])
+      }, [workspace, sessionId, running])
 
       if (workspace === undefined) return null
 
