@@ -44,9 +44,13 @@ const check = (label, actual, expected) => {
   console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${label}: ${actual}${ok ? '' : ` (期望 ${expected})`}`)
 }
 
-/** 找到两个插件各自的按钮。 */
+/** 找到两个插件各自的按钮。
+ *
+ * 审查入口的文本会随状态变化（"本轮暂无改动"或纯数字），因此按 title 精确匹配，
+ * 而不是按文本包含关系——按文本匹配会同时命中分支徽章（它的文本也可能含同样的字）。
+ */
 const FIND = {
-  review: `[...document.querySelectorAll('button')].find((el) => (el.innerText || '').includes('本轮'))`,
+  review: `[...document.querySelectorAll('button')].find((el) => (el.getAttribute('title') || '') === '在侧边栏查看')`,
   gitbar: `[...document.querySelectorAll('button')].find((el) => (el.getAttribute('title') || '').startsWith('Git:'))`,
 }
 

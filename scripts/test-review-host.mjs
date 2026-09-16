@@ -12,7 +12,7 @@
 //   4. 未登记的工作区 -> 400
 //   5. 整个过程不污染用户状态：status 与 stash 列表不变
 import { execFile, execFileSync, spawn } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -150,6 +150,40 @@ try {
   const stashAfter = run(['stash', 'list'], repo)
   check('5) status 未被污染（除本次改动外无新增条目）', statusAfter.split('\n').filter((l) => l.trim() !== '').length, 3)
   check('   stash 列表仍为空', stashAfter.trim(), stashBefore.trim())
+
+  // ---- 6. 还原（唯一的写操作，必须重点验证）--------------------------------
+  console.log('')
+  console.log('--- 还原 ---')
+
+  // 6a. 越界路径必须被拒
+  for (const bad of ['/etc/passwd', '../outside.txt', 'a/../../b.txt', '']) {
+    res = await call('/dsh-desktop/review/revert', { workspace, sessionId: session, scope: 'workspace', paths: [bad] })
+    check(`6a) 拒绝不安全路径 ${JSON.stringify(bad)}`, res.status, 400)
+  }
+
+  // 6b. 空路径列表必须被拒
+  res = await call('/dsh-desktop/review/revert', { workspace, sessionId: session, scope: 'workspace', paths: [] })
+  check('6b) 拒绝空路径列表', res.status, 400)
+
+  // 6c. 还原一个已修改的文件到 HEAD，内容应恢复原样
+  res = await call('/dsh-desktop/review/revert', {
+    workspace,
+    sessionId: session,
+    scope: 'workspace',
+    paths: ['modify.txt'],
+  })
+  check('6c) 还原修改文件 -> 200', res.status, 200)
+  check('   文件内容已恢复', readFileSync(join(repo, 'modify.txt'), 'utf8').trim(), 'before')
+
+  // 6d. 还原不应改动 HEAD 与索引（只动工作区）
+  check('   索引未被暂存（status 仍显示已修改以外的状态）', run(['diff', '--cached', '--name-only'], repo).trim(), '')
+
+  // 6e. 还原后该文件不再出现在"工作区改动"里
+  res = await call('/dsh-desktop/review/workspace', { workspace, sessionId: session })
+  json = await res.json()
+  const afterRevert = new Map((json.files ?? []).map((f) => [f.path, f]))
+  check('6e) 还原后的文件从列表消失', afterRevert.has('modify.txt'), 'false')
+  check('   其它改动仍在列表里', afterRevert.has('added.txt'), 'true')
 
   // ---- 4. 未登记的工作区 ---------------------------------------------------
   const other = mkdtempSync(join(tmpdir(), 'dsh-review-other-'))

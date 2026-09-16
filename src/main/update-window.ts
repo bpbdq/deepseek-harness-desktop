@@ -45,6 +45,8 @@ export interface UpdatePanelState {
   shellCanInstall: boolean
   /** 正在下载外壳更新的百分比（0-100），未在下载时为 undefined。 */
   shellProgress?: number
+  /** 正在下载运行时更新的百分比（0-100），未在下载时为 undefined。 */
+  runtimeProgress?: number
 }
 
 /** 面板文案与动作所需的字符串。 */
@@ -64,6 +66,8 @@ export interface UpdateWindowStrings {
   buttonShell: string
   shellUnavailable: string
   shellProgress: string
+  /** 按钮在下载中的文案，`{percent}` 会被替换成百分比。 */
+  buttonDownloading: string
   shellFailedTitle: string
   /** 运行时轨道专用：「该通道最新版本」。 */
   runtimeLatestLabel: string
@@ -135,6 +139,9 @@ export function openUpdateWindow(
     const strings = ${JSON.stringify({
       shellUnavailable: strings.shellUnavailable,
       shellProgress: strings.shellProgress,
+      buttonDownloading: strings.buttonDownloading,
+      buttonRuntime: strings.buttonRuntime,
+      buttonShell: strings.buttonShell,
       installedLabel: strings.installedLabel,
       latestLabel: strings.latestLabel,
       detailLabel: strings.detailLabel,
@@ -177,6 +184,41 @@ export function openUpdateWindow(
       const shellButton = document.getElementById('btn-shell');
       shellButton.hidden = !(payload.shell.state === 'available' && payload.shellCanInstall);
 
+      // 下载进度直接写在按钮上。
+      //
+      // 进度条在窗口顶部、按钮在底部，窗口一长两者就不同屏——用户点了"下载"之后，
+      // 视线还在按钮上，看不到顶部的进度条，于是**以为没反应**（这是实际反馈的问题）。
+      // 因此按钮自身也要表达状态：下载中显示百分比并禁用。
+      if (payload.shellProgress !== undefined) {
+        shellButton.textContent = strings.buttonDownloading.replace('{percent}', String(payload.shellProgress));
+        shellButton.disabled = true;
+      } else {
+        shellButton.textContent = strings.buttonShell;
+        shellButton.disabled = false;
+      }
+      if (payload.runtimeProgress !== undefined) {
+        runtimeButton.textContent = strings.buttonDownloading.replace('{percent}', String(payload.runtimeProgress));
+        runtimeButton.disabled = true;
+      } else {
+        runtimeButton.textContent = strings.buttonRuntime;
+        runtimeButton.disabled = false;
+      }
+
+      // 进度条：任一条轨道在下载时都展示（原来只认外壳那条，运行时更新时顶部没有反馈）。
+      //
+      // 顺序要求：这一段必须在 shellNote 之前。因为页面脚本是模板字符串拼出来的，
+      // 这里的注释不能使用反引号（会提前闭合模板），也避免用含反引号的词。
+      const percent = payload.shellProgress ?? payload.runtimeProgress;
+      const wrap = document.getElementById('progress-wrap');
+      if (percent === undefined) {
+        wrap.hidden = true;
+      } else {
+        wrap.hidden = false;
+        document.getElementById('progress-bar').style.width = percent + '%';
+        document.getElementById('progress-text').textContent =
+          strings.shellProgress.replace('{percent}', String(percent));
+      }
+
       const shellNote = document.getElementById('shell-note');
       // 注意顺序：renderTrack 已经把真实原因（例如"未打包运行"）写进 note 了，
       // 这里只能在没有原因时补一句通用提示，**不能无条件覆盖**。
@@ -196,8 +238,7 @@ export function openUpdateWindow(
       wrap.hidden = false;
       document.getElementById('progress-bar').style.width = payload.shellProgress + '%';
       document.getElementById('progress-text').textContent =
-        strings.shellProgress.replace('{percent}', String(payload.shellProgress));
-    });`
+        strings.shellProgress.replace('{percent}', String(payload.shellProgress));    });`
 
   const css = `
   .track { margin-top: 16px; padding-top: 12px; border-top: 1px solid #2a2a30; }
@@ -226,8 +267,10 @@ export function openUpdateWindow(
       footer,
       script,
       css,
-      width: 520,
-      height: 470,
+      width: 560,
+      // 高度给足，避免底部的操作按钮被截在可视区之外（此前 470 就是这个问题：用户
+      // 看不到"下载"按钮，自然也无从点击）。openPanel 已把窗口设为可调整大小。
+      height: 720,
     },
     onAction,
   )

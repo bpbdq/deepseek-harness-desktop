@@ -36,6 +36,12 @@ const MAX_DIFF_BYTES = 512 * 1024
 /** 树对象 SHA 格式：40 位十六进制。用于校验客户端传来的基线。 */
 const REVISION_PATTERN = /^[0-9a-f]{40}$/u
 
+/** 允许还原的路径形状。
+ *
+ * 必须挡住绝对路径与 `..`：还原会把文件写回工作区，是少数**写**工作区的操作，
+ * 因此路径只能来自仓库内部。git 自身也会拒绝越界路径，但在这里先挡掉更清楚。 */
+const SAFE_PATH_PATTERN = /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[^\0]{1,1024}$/u
+
 /** 每个会话的基线状态。 */
 const baselines = new Map()
 
@@ -398,6 +404,60 @@ function createReviewHandler() {
         return
       }
 
+      // ---- 还原：把指定路径恢复到基线或 HEAD -------------------------------
+      //
+      // 这是本插件唯一的**写**操作，因此格外保守：
+      //   * 路径必须通过形状校验（相对路径、无 `..`、长度受限）；
+      //   * 还原源只能是 HEAD 或已记录的基线树对象，客户端无法指定任意对象；
+      //   * 支持多个路径，但一次请求里的路径全部来自同一个仓库。
+      // 这样即使客户端被注入，它能做的最坏情况也只是"把工作区文件恢复成基线内容"——
+      // 而用户自己的改动本来就存在 git 里，可再找回。
+      if (url.pathname === `${ROUTE_PREFIX}/revert`) {
+        if (request.method !== 'POST') {
+          response.setHeader('allow', 'POST')
+          sendJson(response, 405, { error: 'method not allowed' })
+          return
+        }
+        if (!(await isRepo(workspace))) {
+          sendJson(response, 200, { isRepo: false })
+          return
+        }
+
+        const requestedPaths = Array.isArray(payload.paths) ? payload.paths : []
+        if (requestedPaths.length === 0) {
+          sendJson(response, 400, { error: 'paths is required', code: 'noPaths' })
+          return
+        }
+        const bad = requestedPaths.find((item) => typeof item !== 'string' || !SAFE_PATH_PATTERN.test(item))
+        if (bad !== undefined) {
+          sendJson(response, 400, { error: `unsafe path: ${String(bad).slice(0, 80)}`, code: 'unsafePath' })
+          return
+        }
+
+        // 还原源：本轮基线（scope=turn）或 HEAD（scope=workspace）。
+        let source
+        if (payload.scope === 'turn') {
+          const stored = baselines.get(sessionId)
+          if (stored === undefined || stored.workspace !== workspace) {
+            sendJson(response, 400, { error: 'no baseline recorded for this turn', code: 'noBaseline' })
+            return
+          }
+          source = stored.revision
+        } else {
+          source = (await git(['rev-parse', 'HEAD'], workspace)).trim()
+        }
+        if (!REVISION_PATTERN.test(source)) {
+          sendJson(response, 400, { error: 'no valid revision to restore from', code: 'noRevision' })
+          return
+        }
+
+        // `git restore --source <rev> --worktree -- <paths>`：只动工作区，不动索引与 HEAD。
+        // 用 `--` 分隔，避免路径被当成选项（git 的一条经典陷阱）。
+        await git(['restore', '--source', source, '--worktree', '--', ...requestedPaths], workspace)
+        sendJson(response, 200, { isRepo: true, restored: requestedPaths, source })
+        return
+      }
+
       sendJson(response, 404, { error: 'not found' })
     } catch (error) {
       // 任何未预期错误都转成 JSON，避免客户端拿到 HTML 错误页而无法解析。
@@ -412,7 +472,12 @@ function createReviewHandler() {
  */
 export function apply(ctx) {
   const handler = createReviewHandler()
-  for (const path of [`${ROUTE_PREFIX}/baseline`, `${ROUTE_PREFIX}/changes`, `${ROUTE_PREFIX}/workspace`]) {
+  for (const path of [
+    `${ROUTE_PREFIX}/baseline`,
+    `${ROUTE_PREFIX}/changes`,
+    `${ROUTE_PREFIX}/workspace`,
+    `${ROUTE_PREFIX}/revert`,
+  ]) {
     ctx.effect(() => ctx.webServer.register({ kind: 'exact', path, handler }), `review: ${path}`)
   }
 }

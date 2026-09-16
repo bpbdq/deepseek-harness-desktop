@@ -674,6 +674,7 @@ function openUpdatesFor(deps: {
       buttonShell: s.updateButtonShell,
       shellUnavailable: s.updateShellUnavailable,
       shellProgress: s.updateShellProgress,
+      buttonDownloading: s.updateButtonDownloading,
       shellFailedTitle: s.updateShellFailedTitle,
       runtimeLatestLabel: s.updateRuntimeLatestLabel,
       shellLatestLabel: s.updateShellLatestLabel,

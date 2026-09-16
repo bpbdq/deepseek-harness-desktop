@@ -26,7 +26,13 @@ window.__ModuleLoader__.load({
     /** 稳定插件名，用于诊断。 */
     const name = 'dsh-client-ui-review'
 
-    /** 概览入口所在的槽位（输入框工具栏，与分支徽章同排）。 */
+    /** 概览入口所在的槽位。
+     *
+     * 必须是 **list** 类型的槽位：single 槽只能有一个注册，占用它会顶掉官方自己的注册，
+     * 甚至让整个界面加载失败（实际踩过——把入口挂到 conversation.composer.bar 后，
+     * 官方的 conversation 包注册失败，界面显示 "Failed to load plugins"）。
+     * 下方工具栏与分支徽章同排，是 list 槽且已验证可用。
+     */
     const CHIP_SLOT = 'conversation.input.right'
 
     /** 项目页（尚未进入会话时）可用的槽位：工作区选择器那一行。 */
@@ -70,6 +76,10 @@ window.__ModuleLoader__.load({
       workspaceClean: '这个项目当前没有未提交的改动。',
       workspaceEmpty: '这个仓库还没有任何提交。',
       collapse: '收起面板',
+      revert: '还原',
+      revertConfirm: '确认还原',
+      reverting: '还原中…',
+      revertFailed: '还原失败：{message}',
       loading: '正在读取差异…',
       truncated: '差异过大，仅显示前一部分。',
       openInSidebar: '在侧边栏查看',
@@ -95,6 +105,10 @@ window.__ModuleLoader__.load({
       workspaceClean: 'This project has no uncommitted changes.',
       workspaceEmpty: 'This repository has no commits yet.',
       collapse: 'Collapse panel',
+      revert: 'Revert',
+      revertConfirm: 'Confirm revert',
+      reverting: 'Reverting…',
+      revertFailed: 'Revert failed: {message}',
       loading: 'Loading diff…',
       truncated: 'The diff is large; only the beginning is shown.',
       openInSidebar: 'Open in sidebar',
@@ -450,6 +464,9 @@ window.__ModuleLoader__.load({
             result: active.result,
             phase: active.phase,
             message: active.message,
+            workspace,
+            sessionId,
+            onChanged: scope === 'workspace' ? workspaceChanges.reload : turn.reload,
           }),
         ),
       )
@@ -614,8 +631,36 @@ window.__ModuleLoader__.load({
     function FileList(props) {
       const { t, result, phase, message } = props
       const [expanded, setExpanded] = react.useState('')
+      // 待确认还原的路径：还原是写操作，必须二次确认，因此先记下来再让用户点确认。
+      const [confirming, setConfirming] = react.useState('')
+      const [busy, setBusy] = react.useState('')
+      const [trouble, setTrouble] = react.useState('')
+      const onChanged = typeof props?.onChanged === 'function' ? props.onChanged : () => undefined
       const { files, added, removed } = summarize(result)
       const byFile = react.useMemo(() => splitByFile(result?.diff ?? ''), [result?.diff])
+
+      /**
+       * 还原单个文件到基线（本轮）或 HEAD（工作区）。
+       * @param path - 相对仓库根的路径。
+       */
+      const revert = async (path) => {
+        setBusy(path)
+        setTrouble('')
+        try {
+          await call('revert', {
+            workspace: props.workspace,
+            sessionId: props.sessionId,
+            scope: result?.scope === 'workspace' ? 'workspace' : 'turn',
+            paths: [path],
+          })
+          setConfirming('')
+          onChanged()
+        } catch (cause) {
+          setTrouble(String(cause.message ?? cause))
+        } finally {
+          setBusy('')
+        }
+      }
 
       if (phase === 'loading') {
         return react.createElement('div', { style: { color: 'var(--dsw-alias-label-tertiary)', fontSize: '12px', padding: '10px 2px' } }, t('loading'))
@@ -653,46 +698,78 @@ window.__ModuleLoader__.load({
         files.map((file) => {
           const diff = byFile.get(file.path) ?? ''
           const open = expanded === file.path
+          const wantsRevert = confirming === file.path
+          const working = busy === file.path
           return react.createElement(
             'div',
             { key: file.path },
             react.createElement(
-              'button',
-              {
-                type: 'button',
-                onClick: () => setExpanded(open ? '' : file.path),
-                title: file.path,
-                style: {
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px',
-                  width: '100%',
-                  textAlign: 'left',
-                  padding: '6px 8px',
-                  border: '1px solid var(--dsw-alias-border-l1, #2f2f36)',
-                  borderRadius: '6px',
-                  background: open ? '#2d4a7c' : 'var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-layer-2, #26262c))',
-                  color: 'var(--dsw-alias-label-primary)',
-                  font: '12px ui-monospace, Consolas, monospace',
-                  cursor: 'pointer',
+              'div',
+              { style: { display: 'flex', alignItems: 'stretch', gap: '4px' } },
+              react.createElement(
+                'button',
+                {
+                  type: 'button',
+                  onClick: () => setExpanded(open ? '' : file.path),
+                  title: file.path,
+                  style: {
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    flex: '1 1 auto',
+                    minWidth: 0,
+                    textAlign: 'left',
+                    padding: '6px 8px',
+                    border: '1px solid var(--dsw-alias-border-l1, #2f2f36)',
+                    borderRadius: '6px',
+                    background: open ? '#2d4a7c' : 'var(--dsw-alias-bg-layer-2, #26262c)',
+                    color: open ? '#cfe0ff' : 'var(--dsw-alias-label-primary)',
+                    font: '12px ui-monospace, Consolas, monospace',
+                    cursor: 'pointer',
+                  },
                 },
-              },
-              react.createElement(
-                'span',
-                { style: { color: STATUS_COLORS[file.status?.[0]] ?? 'var(--dsw-alias-label-secondary)', minWidth: '38px', fontSize: '11px' } },
-                t(STATUS_KEYS[file.status?.[0]] ?? 'statusOther'),
+                react.createElement(
+                  'span',
+                  { style: { color: STATUS_COLORS[file.status?.[0]] ?? 'var(--dsw-alias-label-secondary)', minWidth: '38px', fontSize: '11px' } },
+                  t(STATUS_KEYS[file.status?.[0]] ?? 'statusOther'),
+                ),
+                react.createElement(
+                  'span',
+                  { style: { flex: 1, wordBreak: 'break-all', lineHeight: '1.35' } },
+                  file.path,
+                ),
+                react.createElement(
+                  'span',
+                  { style: { whiteSpace: 'nowrap', fontSize: '11px' } },
+                  react.createElement('span', { style: { color: '#8fd6a4' } }, `+${file.added ?? 0}`),
+                  ' ',
+                  react.createElement('span', { style: { color: '#e0a0a0' } }, `−${file.removed ?? 0}`),
+                ),
               ),
+              // 还原按钮。首次点击进入确认态，再点一次才真正还原——这是写操作，
+              // 不该一击生效（误点会丢掉用户自己的改动）。
               react.createElement(
-                'span',
-                { style: { flex: 1, wordBreak: 'break-all', lineHeight: '1.35' } },
-                file.path,
-              ),
-              react.createElement(
-                'span',
-                { style: { whiteSpace: 'nowrap', fontSize: '11px' } },
-                react.createElement('span', { style: { color: '#8fd6a4' } }, `+${file.added ?? 0}`),
-                ' ',
-                react.createElement('span', { style: { color: '#e0a0a0' } }, `−${file.removed ?? 0}`),
+                'button',
+                {
+                  type: 'button',
+                  disabled: working,
+                  title: wantsRevert ? t('revertConfirm') : t('revert'),
+                  onClick: () => (wantsRevert ? void revert(file.path) : setConfirming(file.path)),
+                  onBlur: () => setConfirming((current) => (current === file.path ? '' : current)),
+                  style: {
+                    flex: '0 0 auto',
+                    padding: '0 8px',
+                    borderRadius: '6px',
+                    border: `1px solid ${wantsRevert ? '#8b5a5a' : 'var(--dsw-alias-border-l1, #2f2f36)'}`,
+                    background: wantsRevert ? '#6b3b3b' : 'var(--dsw-alias-bg-layer-2, #26262c)',
+                    color: wantsRevert ? '#ffdede' : 'var(--dsw-alias-label-secondary)',
+                    fontSize: '11px',
+                    fontFamily: 'inherit',
+                    cursor: working ? 'default' : 'pointer',
+                    whiteSpace: 'nowrap',
+                  },
+                },
+                working ? t('reverting') : wantsRevert ? t('revertConfirm') : t('revert'),
               ),
             ),
             open
@@ -736,7 +813,7 @@ window.__ModuleLoader__.load({
           ? props.useSessions((state) => state?.byId?.[sessionId]?.cwd)
           : undefined
 
-      const { state } = useChanges(workspace, sessionId)
+      const { state, reload } = useChanges(workspace, sessionId)
 
       return react.createElement(
         'div',
@@ -746,6 +823,9 @@ window.__ModuleLoader__.load({
           result: state.result,
           phase: state.phase,
           message: state.message,
+          workspace,
+          sessionId,
+          onChanged: reload,
         }),
       )
     }
@@ -822,7 +902,9 @@ window.__ModuleLoader__.load({
       if (workspace === undefined) return null
 
       const hasChanges = typeof count === 'number' && count > 0
-      const label = count === null ? t('idle') : t('files', { count })
+      // 只用数字，不加"个文件"字样：这一排宽度有限，多出的文字会把相邻控件挤变形。
+      // 完整含义放在悬停提示里。
+      const label = count === null ? t('idle') : String(count)
 
       return react.createElement(
         'button',

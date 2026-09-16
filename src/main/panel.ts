@@ -16,7 +16,7 @@
  */
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { BrowserWindow, ipcMain, nativeTheme } from 'electron'
+import { BrowserWindow, ipcMain, nativeTheme, screen } from 'electron'
 
 /** 面板的一行静态信息。 */
 export interface PanelRow {
@@ -107,11 +107,17 @@ export function panelCss(): string {
   return `
   :root { color-scheme: ${c.scheme}; }
   * { box-sizing: border-box; }
+  /* 让页面成为一列固定高度的布局：标题与内容可滚动，底部按钮永远贴在视口内。
+     此前 body 只是普通块级盒，footer 随内容一起滚动——窗口一矮，操作按钮就被滚出
+     可视区，用户看到的是"按钮不存在"，而实际它只是被推到下面了。 */
+  html, body { height: 100%; }
   body {
-    margin: 0; padding: 20px 22px;
+    margin: 0;
+    display: flex; flex-direction: column;
     font: 13px/1.55 -apple-system, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
     background: ${c.bg}; color: ${c.fg};
   }
+  main { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 20px 22px 0; }
   h1 { margin: 0 0 14px; font-size: 15px; font-weight: 600; }
   .row { display: flex; gap: 14px; padding: 7px 0; border-top: 1px solid ${c.border}; }
   .row:first-of-type { border-top: none; }
@@ -122,13 +128,22 @@ export function panelCss(): string {
     word-break: break-all; white-space: pre-wrap;
   }
   .hint { margin-top: 3px; color: ${c.hint}; font-family: inherit; font-size: 12px; }
-  footer { margin-top: 18px; display: flex; justify-content: flex-end; gap: 8px; }
+  /* 按钮区固定在底部，不随内容滚动。 */
+  footer {
+    flex: 0 0 auto;
+    display: flex; justify-content: flex-end; gap: 8px;
+    padding: 12px 22px 16px;
+    border-top: 1px solid ${c.border};
+    background: ${c.bg};
+  }
   button {
     font: inherit; padding: 6px 16px; border-radius: 6px; cursor: pointer;
     background: ${c.buttonBg}; color: ${c.fg}; border: 1px solid ${c.buttonBorder};
   }
   button:hover:not(:disabled) { background: ${c.buttonHover}; }
   button:disabled { opacity: .5; cursor: default; }
+  /* 下载中的按钮：文字含百分比，略降不透明度提示不可重复点击。 */
+  button.busy { opacity: .85; }
   button.primary { background: #2d4a7c; border-color: #3a5c94; color: #fff; }
   button.primary:hover:not(:disabled) { background: #35578f; }
 `
@@ -163,8 +178,10 @@ export function openPanel(
 <style>${panelCss()}${spec.css ?? ''}</style>
 </head>
 <body>
-  <h1>${escapeHtml(spec.title)}</h1>
-  ${spec.body}
+  <main>
+    <h1>${escapeHtml(spec.title)}</h1>
+    ${spec.body}
+  </main>
   ${spec.footer ?? ''}
 <script>
   // 页面只负责渲染：数据由主进程推送，按钮点击回传 action。
@@ -182,9 +199,14 @@ export function openPanel(
     'utf8',
   )
 
+  // 高度不得超过屏幕可用区域，否则在小屏上窗口会超出屏幕、底部按钮同样够不到。
+  // 用户仍可拖动边框调整大小（resizable: true）。
+  const workArea = screen.getPrimaryDisplay().workAreaSize
+  const height = Math.min(spec.height, Math.round(workArea.height * 0.9))
+
   const window = new BrowserWindow({
-    width: spec.width,
-    height: spec.height,
+    width: Math.min(spec.width, workArea.width - 40),
+    height: Math.max(height, 400),
     parent,
     modal: false,
     resizable: true,

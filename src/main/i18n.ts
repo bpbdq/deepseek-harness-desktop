@@ -56,6 +56,8 @@ export interface ShellStrings {
   updateButtonShell: string
   updateShellUnavailable: string
   updateShellProgress: string
+  /** 按钮在下载中的文案，`{percent}` 会被替换成百分比。 */
+  updateButtonDownloading: string
   updateShellFailedTitle: string
   updateShellReadyTitle: string
   updateShellReadyDetail: string
@@ -195,6 +197,7 @@ const en: ShellStrings = {
   updateButtonShell: 'Download and install',
   updateShellUnavailable: 'Automatic shell updates need a published release with update metadata.',
   updateShellProgress: 'Downloading… {percent}%',
+  updateButtonDownloading: 'Downloading {percent}%…',
   updateShellFailedTitle: 'Shell update failed',
   updateShellReadyTitle: 'Shell update ready',
   updateShellReadyDetail: 'The new version has been downloaded. Restart to apply it.',
@@ -332,6 +335,7 @@ const zh: ShellStrings = {
   updateButtonShell: '下载并安装',
   updateShellUnavailable: '外壳自动更新需要已发布且带更新元数据的版本。',
   updateShellProgress: '正在下载… {percent}%',
+  updateButtonDownloading: '下载中 {percent}%…',
   updateShellFailedTitle: '外壳更新失败',
   updateShellReadyTitle: '外壳更新已就绪',
   updateShellReadyDetail: '新版本已下载完成，重启后生效。',
