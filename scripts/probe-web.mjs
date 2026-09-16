@@ -8,7 +8,7 @@
 // <installRoot> is a directory containing
 //   node_modules/@deepseek-ai/dsh/package.json
 // e.g. the repo's ./runtime, or a packaged resources/runtime.
-import { existsSync, mkdirSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 
 const installRoot = resolve(process.argv[2] ?? 'runtime')
@@ -25,11 +25,8 @@ if (!existsSync(installAnchor)) {
 // real one from the repo rather than reimplementing it here.
 const serverEntry = resolve(import.meta.dirname, '..', 'src', 'server', 'server.mjs')
 const stagedEntry = join(installRoot, 'server.mjs')
-if (!existsSync(stagedEntry)) {
-  // Cheapest correct setup: let the shell's own mechanism do the copy.
-  const { copyFileSync } = await import('node:fs')
-  copyFileSync(serverEntry, stagedEntry)
-}
+copyFileSync(serverEntry, stagedEntry)
+copyFileSync(join(resolve(import.meta.dirname, '..'), 'src/server/client-module-cache.mjs'), join(installRoot, 'client-module-cache.mjs'))
 
 mkdirSync(dshHome, { recursive: true })
 console.log(`[probe-web] installRoot = ${installRoot}`)

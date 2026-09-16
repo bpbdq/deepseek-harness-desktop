@@ -76,7 +76,7 @@ function splashHtml(title: string, hint: string): string {
 </head>
 <body>
   <div class="mark"><span class="dot"></span><h1>${title}</h1></div>
-  <div class="hint">${hint}</div>
+  <div class="hint" id="startup-hint">${hint}</div>
 </body>
 </html>`
 }
@@ -125,6 +125,7 @@ export function createMainWindow(options: MainWindowOptions): {
   clearProjectState: () => Promise<void>
   /** 更新加载页的提示文案（例如解包进度）。 */
   setSplashHint: (hint: string) => void
+  setGitBadge: (badge: string | undefined) => void
   close: () => void
 } {
   const { userDataDir, iconPath, gitBadge, splashTitle, splashHint } = options
@@ -168,11 +169,23 @@ export function createMainWindow(options: MainWindowOptions): {
     }
   }
   writeSplash(splashHint)
-  void window.loadFile(splashPath)
 
   let shown = false
   /** 是否已经导航到真实 UI（导航后不得再重写加载页）。 */
   let navigated = false
+  let splashReady = false
+  let pendingHint = splashHint
+  const updateHint = (): void => {
+    if (!splashReady || navigated || window.isDestroyed()) return
+    // JSON encoding keeps progress text data; it is never interpreted as markup.
+    void window.webContents.executeJavaScript(
+      `document.getElementById('startup-hint')?.replaceChildren(document.createTextNode(${JSON.stringify(pendingHint)}))`,
+    ).catch(() => {})
+  }
+  void window.loadFile(splashPath).then(() => {
+    splashReady = true
+    updateHint()
+  }).catch(() => {})
   const show = (): void => {
     if (shown || window.isDestroyed()) return
     shown = true
@@ -200,7 +213,7 @@ export function createMainWindow(options: MainWindowOptions): {
   // 网页 UI 会自己设置 document.title，导航后要把带 git 徽章的标题重新压回去，
   // 否则每次跳转都会把分支信息冲掉。
   const baseTitle = 'DeepSeek Harness'
-  const title = gitBadge === undefined ? baseTitle : `${baseTitle} — ${gitBadge}`
+  let title = gitBadge === undefined ? baseTitle : `${baseTitle} — ${gitBadge}`
   window.setTitle(title)
   window.on('page-title-updated', (event) => {
     event.preventDefault()
@@ -213,10 +226,10 @@ export function createMainWindow(options: MainWindowOptions): {
     window,
     navigate: async (ready: ServerReady): Promise<void> => {
       origin = new URL(ready.url).origin
+      // Stop progress updates before navigation begins, including fast-server races.
+      navigated = true
       // 带 token 的 URL 只加载一次，随后服务端会 302 到凭 Cookie 认证的干净根路径。
       await window.loadURL(ready.authenticatedUrl)
-      // 标记已导航：此后不再允许重写加载页，否则会把真实界面刷掉。
-      navigated = true
       show()
     },
     /**
@@ -243,10 +256,13 @@ export function createMainWindow(options: MainWindowOptions): {
       if (!window.isDestroyed()) window.destroy()
     },
     setSplashHint: (hint: string): void => {
-      // 只在还停在加载页时重写并重载：已经导航到真实 UI 之后再重载会把用户界面刷掉。
       if (window.isDestroyed() || navigated) return
-      writeSplash(hint)
-      void window.loadFile(splashPath)
+      pendingHint = hint
+      updateHint()
+    },
+    setGitBadge: (badge: string | undefined): void => {
+      title = badge === undefined ? baseTitle : `${baseTitle} — ${badge}`
+      if (!window.isDestroyed()) window.setTitle(title)
     },
   }
 }
