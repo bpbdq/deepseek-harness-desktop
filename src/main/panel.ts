@@ -16,7 +16,7 @@
  */
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { BrowserWindow, ipcMain } from 'electron'
+import { BrowserWindow, ipcMain, nativeTheme } from 'electron'
 
 /** 面板的一行静态信息。 */
 export interface PanelRow {
@@ -72,35 +72,67 @@ export function renderRows(rows: readonly PanelRow[]): string {
     .join('')
 }
 
-/** 面板的默认样式：与官方 Web UI 的深色基调一致。 */
-export const PANEL_CSS = `
-  :root { color-scheme: dark; }
+/**
+ * 面板的样式，跟随系统外观。
+ *
+ * 此前写死深色，于是**浅色系统下打开项目信息面板会是一整块深色**，与其余界面不一致。
+ * 现在按当前系统偏好选用一套色板。
+ * @returns 该面板的完整 CSS。
+ */
+export function panelCss(): string {
+  const dark = nativeTheme.shouldUseDarkColors
+  const c = dark
+    ? {
+        scheme: 'dark',
+        bg: '#1b1b1f',
+        fg: '#e8e8ea',
+        border: '#2a2a30',
+        label: '#9a9aa2',
+        hint: '#7c7c85',
+        buttonBg: '#2f2f36',
+        buttonBorder: '#3d3d45',
+        buttonHover: '#3a3a42',
+      }
+    : {
+        scheme: 'light',
+        bg: '#f6f6f8',
+        fg: '#1f1f24',
+        border: '#e2e2e8',
+        label: '#5f5f68',
+        hint: '#8a8a93',
+        buttonBg: '#ffffff',
+        buttonBorder: '#d0d0d8',
+        buttonHover: '#eeeef2',
+      }
+  return `
+  :root { color-scheme: ${c.scheme}; }
   * { box-sizing: border-box; }
   body {
     margin: 0; padding: 20px 22px;
     font: 13px/1.55 -apple-system, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
-    background: #1b1b1f; color: #e8e8ea;
+    background: ${c.bg}; color: ${c.fg};
   }
   h1 { margin: 0 0 14px; font-size: 15px; font-weight: 600; }
-  .row { display: flex; gap: 14px; padding: 7px 0; border-top: 1px solid #2a2a30; }
+  .row { display: flex; gap: 14px; padding: 7px 0; border-top: 1px solid ${c.border}; }
   .row:first-of-type { border-top: none; }
-  .label { flex: 0 0 128px; color: #9a9aa2; }
+  .label { flex: 0 0 128px; color: ${c.label}; }
   .value {
     flex: 1 1 auto; min-width: 0;
     font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
     word-break: break-all; white-space: pre-wrap;
   }
-  .hint { margin-top: 3px; color: #7c7c85; font-family: inherit; font-size: 12px; }
+  .hint { margin-top: 3px; color: ${c.hint}; font-family: inherit; font-size: 12px; }
   footer { margin-top: 18px; display: flex; justify-content: flex-end; gap: 8px; }
   button {
     font: inherit; padding: 6px 16px; border-radius: 6px; cursor: pointer;
-    background: #2f2f36; color: #e8e8ea; border: 1px solid #3d3d45;
+    background: ${c.buttonBg}; color: ${c.fg}; border: 1px solid ${c.buttonBorder};
   }
-  button:hover:not(:disabled) { background: #3a3a42; }
+  button:hover:not(:disabled) { background: ${c.buttonHover}; }
   button:disabled { opacity: .5; cursor: default; }
-  button.primary { background: #2d4a7c; border-color: #3a5c94; }
+  button.primary { background: #2d4a7c; border-color: #3a5c94; color: #fff; }
   button.primary:hover:not(:disabled) { background: #35578f; }
 `
+}
 
 /**
  * 打开一个信息面板窗口。
@@ -128,7 +160,7 @@ export function openPanel(
 <head>
 <meta charset="utf-8">
 <title>${escapeHtml(spec.title)}</title>
-<style>${PANEL_CSS}${spec.css ?? ''}</style>
+<style>${panelCss()}${spec.css ?? ''}</style>
 </head>
 <body>
   <h1>${escapeHtml(spec.title)}</h1>
@@ -160,7 +192,7 @@ export function openPanel(
     maximizable: false,
     title: spec.title,
     autoHideMenuBar: true,
-    backgroundColor: '#1b1b1f',
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#1b1b1f' : '#f6f6f8',
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,

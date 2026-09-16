@@ -14,7 +14,7 @@
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { BrowserWindow, shell, type BrowserWindowConstructorOptions } from 'electron'
+import { BrowserWindow, nativeTheme, shell, type BrowserWindowConstructorOptions } from 'electron'
 import type { ServerReady } from './dsh-server'
 
 interface WindowState {
@@ -40,18 +40,27 @@ const SPLASH_FALLBACK_SHOW_MS = 2500
  * @returns 完整 HTML 文档。
  */
 function splashHtml(title: string, hint: string): string {
+  // 加载页也要跟随系统外观。
+  //
+  // 此前整体写死深色，于是**系统设为浅色时，启动瞬间会先闪一块深色底**，而菜单栏周围
+  // 也会露出深色——用户看到的就是"顶部这些没变成浅色"。这里按当前系统偏好选用配色，
+  // 并让窗口背景色与之同步（见 themeBackground）。
+  const dark = nativeTheme.shouldUseDarkColors
+  const palette = dark
+    ? { scheme: 'dark', bg: '#1b1b1f', fg: '#e8e8ea', hint: '#8a8a93' }
+    : { scheme: 'light', bg: '#f6f6f8', fg: '#1f1f24', hint: '#6b6b75' }
   return `<!doctype html>
 <html lang="zh">
 <head>
 <meta charset="utf-8">
 <title>${title}</title>
 <style>
-  :root { color-scheme: dark; }
+  :root { color-scheme: ${palette.scheme}; }
   html, body { height: 100%; margin: 0; }
   body {
     display: flex; flex-direction: column;
     align-items: center; justify-content: center; gap: 18px;
-    background: #1b1b1f; color: #e8e8ea;
+    background: ${palette.bg}; color: ${palette.fg};
     font: 14px/1.6 -apple-system, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
     user-select: none; -webkit-user-select: none;
   }
@@ -62,7 +71,7 @@ function splashHtml(title: string, hint: string): string {
   }
   @keyframes pulse { 0%,100% { opacity: .35; transform: scale(.85) } 50% { opacity: 1; transform: scale(1) } }
   h1 { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: .2px; }
-  .hint { color: #8a8a93; font-size: 12.5px; }
+  .hint { color: ${palette.hint}; font-size: 12.5px; }
 </style>
 </head>
 <body>
@@ -126,7 +135,9 @@ export function createMainWindow(options: MainWindowOptions): {
     minWidth: 900,
     minHeight: 600,
     show: false,
-    backgroundColor: '#1b1b1f',
+    // 窗口底板跟随系统外观：写死深色会在浅色系统下于页面加载前后露出深色边，
+    // 用户看到的就是"顶部没跟着变浅色"。
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#1b1b1f' : '#f6f6f8',
     // 菜单栏承载着唯一用户可达的"检查更新"入口，必须常显。
     // autoHideMenuBar: true 会把它藏到 Alt 之后，等于让所有菜单项不可发现。
     autoHideMenuBar: false,
