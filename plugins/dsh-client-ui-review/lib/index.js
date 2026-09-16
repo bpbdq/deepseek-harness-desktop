@@ -233,6 +233,47 @@ async function readSmallBody(request) {
 }
 
 /**
+ * 把 git 的三份输出整理成前端要的形状。
+ *
+ * 两处路由（本轮差异、工作区差异）需要同样的结构，因此集中在这里——否则两边的行数
+ * 解析一旦走偏，界面上的数字就会不一致，而这种不一致很难被发现。
+ *
+ * @param output - `{ stat, names, diff }`，分别来自 `--numstat`、`--name-status`、`--unified`。
+ * @returns `{ files, diff, truncated }`。
+ */
+function describeDiff({ stat, names, diff }) {
+  // --numstat 给出每个文件的新增/删除行数，与 --name-status 的顺序一致。
+  const counts = new Map()
+  for (const line of stat.split('\n')) {
+    const parts = line.split('\t')
+    if (parts.length < 3) continue
+    counts.set(parts[2], {
+      added: parts[0] === '-' ? null : Number(parts[0]),
+      removed: parts[1] === '-' ? null : Number(parts[1]),
+    })
+  }
+
+  const files = []
+  for (const line of names.split('\n')) {
+    if (line.trim() === '') continue
+    const [status, ...rest] = line.split('\t')
+    // 重命名形如 `R100\told\tnew`，取新路径作为展示对象。
+    const path = rest[rest.length - 1]
+    if (path === undefined) continue
+    const count = counts.get(path)
+    files.push({
+      path,
+      status,
+      added: count?.added ?? null,
+      removed: count?.removed ?? null,
+    })
+  }
+
+  const truncated = diff.length > MAX_DIFF_BYTES
+  return { files, diff: truncated ? diff.slice(0, MAX_DIFF_BYTES) : diff, truncated }
+}
+
+/**
  * 创建审查路由的处理器。
  * @returns `(request, response)` 处理器。
  */
@@ -315,40 +356,44 @@ function createReviewHandler() {
         ])
 
         // --numstat 给出每条文件的新增/删除行数，与 --name-status 的顺序一致。
-        const counts = new Map()
-        for (const line of stat.split('\n')) {
-          const parts = line.split('\t')
-          if (parts.length < 3) continue
-          counts.set(parts[2], {
-            added: parts[0] === '-' ? null : Number(parts[0]),
-            removed: parts[1] === '-' ? null : Number(parts[1]),
-          })
-        }
-
-        const files = []
-        for (const line of names.split('\n')) {
-          if (line.trim() === '') continue
-          const [status, ...rest] = line.split('\t')
-          // 重命名形如 `R100\told\tnew`，取新路径作为展示对象。
-          const path = rest[rest.length - 1]
-          if (path === undefined) continue
-          const count = counts.get(path)
-          files.push({
-            path,
-            status,
-            added: count?.added ?? null,
-            removed: count?.removed ?? null,
-          })
-        }
-
-        const truncated = diff.length > MAX_DIFF_BYTES
         sendJson(response, 200, {
           isRepo: true,
+          scope: 'turn',
           revision: stored.revision,
           takenAt: stored.takenAt,
-          files,
-          diff: truncated ? diff.slice(0, MAX_DIFF_BYTES) : diff,
-          truncated,
+          ...describeDiff({ stat, names, diff }),
+        })
+        return
+      }
+
+      // ---- 工作区级差异：基线取 HEAD（项目级面板用，不需要会话）------------
+      //
+      // 与 /changes 的区别在于语义：那个回答"本轮改了什么"（基线是本轮开始时的快照），
+      // 这个回答"这个项目现在有什么改动"（基线是 HEAD）。项目页还没有任何一轮对话，
+      // 所以那里只能用后者。
+      if (url.pathname === `${ROUTE_PREFIX}/workspace`) {
+        if (!(await isRepo(workspace))) {
+          sendJson(response, 200, { isRepo: false })
+          return
+        }
+        const revision = (await git(['rev-parse', 'HEAD'], workspace).catch(() => '')).trim()
+        if (revision === '') {
+          // 尚无提交的仓库：没有 HEAD 可比较。
+          sendJson(response, 200, { isRepo: true, empty: true, files: [], diff: '', truncated: false })
+          return
+        }
+        const current = await currentTree(workspace, `${sessionId}-workspace`)
+        const [stat, names, diff] = await Promise.all([
+          git(['diff', '--numstat', revision, current], workspace),
+          git(['diff', '--name-status', revision, current], workspace),
+          git(['diff', '--unified=3', revision, current], workspace),
+        ])
+        const payload = describeDiff({ stat, names, diff })
+        sendJson(response, 200, {
+          isRepo: true,
+          scope: 'workspace',
+          revision,
+          ...payload,
         })
         return
       }
@@ -367,7 +412,7 @@ function createReviewHandler() {
  */
 export function apply(ctx) {
   const handler = createReviewHandler()
-  for (const path of [`${ROUTE_PREFIX}/baseline`, `${ROUTE_PREFIX}/changes`]) {
+  for (const path of [`${ROUTE_PREFIX}/baseline`, `${ROUTE_PREFIX}/changes`, `${ROUTE_PREFIX}/workspace`]) {
     ctx.effect(() => ctx.webServer.register({ kind: 'exact', path, handler }), `review: ${path}`)
   }
 }

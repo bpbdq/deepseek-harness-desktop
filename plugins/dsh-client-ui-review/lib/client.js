@@ -29,6 +29,12 @@ window.__ModuleLoader__.load({
     /** 概览入口所在的槽位（输入框工具栏，与分支徽章同排）。 */
     const CHIP_SLOT = 'conversation.input.right'
 
+    /** 项目页（尚未进入会话时）可用的槽位：工作区选择器那一行。 */
+    const HERO_SLOT = 'conversation.hero.workspace'
+
+    /** 常驻面板开关的持久化键（按应用而非按会话记忆）。 */
+    const PANEL_KEY = 'dsh.review.panelOpen'
+
     /** 侧边栏标签正文与标题的槽位。 */
     const TAB_SLOT = 'sidebar.right.pane.tab'
     const TAB_TITLE_SLOT = 'sidebar.right.pane.tab.title'
@@ -59,6 +65,11 @@ window.__ModuleLoader__.load({
       noBaseline: '本轮尚未记录基线。开始一轮对话后会自动记录。',
       notRepo: '当前工作区不是 git 仓库。',
       clean: '本轮没有改动任何文件。',
+      projectTitle: '项目改动',
+      projectIdle: '项目暂无改动',
+      workspaceClean: '这个项目当前没有未提交的改动。',
+      workspaceEmpty: '这个仓库还没有任何提交。',
+      collapse: '收起面板',
       loading: '正在读取差异…',
       truncated: '差异过大，仅显示前一部分。',
       openInSidebar: '在侧边栏查看',
@@ -79,6 +90,11 @@ window.__ModuleLoader__.load({
       noBaseline: 'No baseline recorded for this turn yet. It is captured when a turn starts.',
       notRepo: 'The current workspace is not a git repository.',
       clean: 'This turn did not change any file.',
+      projectTitle: 'Project changes',
+      projectIdle: 'No project changes',
+      workspaceClean: 'This project has no uncommitted changes.',
+      workspaceEmpty: 'This repository has no commits yet.',
+      collapse: 'Collapse panel',
       loading: 'Loading diff…',
       truncated: 'The diff is large; only the beginning is shown.',
       openInSidebar: 'Open in sidebar',
@@ -96,6 +112,48 @@ window.__ModuleLoader__.load({
 
     /** 状态字母对应的颜色，让列表一眼能分辨增删改。 */
     const STATUS_COLORS = { A: '#8fd6a4', M: '#e0c98f', D: '#e0a0a0', R: '#9db8e8' }
+
+    /**
+     * 常驻面板开关的持久化状态。
+     *
+     * 刻意放在模块级而不是组件 state 里：面板需要在**不同槽位之间共享同一个开关**——
+     * 项目页的入口挂在 `conversation.hero.workspace`，会话内的入口挂在输入框工具栏，
+     * 两者是两个组件实例，但它们控制的是同一块面板。用 localStorage 加一个订阅列表，
+     * 既共享状态又跨重启记住用户的选择。
+     */
+    const panelStore = (() => {
+      const listeners = new Set()
+      let open = false
+      try {
+        open = window.localStorage.getItem(PANEL_KEY) === '1'
+      } catch {
+        // 读不到就用默认值（隐私模式等）。
+      }
+      return {
+        get: () => open,
+        set: (value) => {
+          open = value
+          try {
+            window.localStorage.setItem(PANEL_KEY, value ? '1' : '0')
+          } catch {
+            // 存不了也不影响本次会话内的行为。
+          }
+          for (const listener of listeners) listener()
+        },
+        subscribe: (listener) => {
+          listeners.add(listener)
+          return () => listeners.delete(listener)
+        },
+      }
+    })()
+
+    /**
+     * 订阅常驻面板的开关状态。
+     * @returns 当前是否展开。
+     */
+    function usePanelOpen() {
+      return react.useSyncExternalStore(panelStore.subscribe, panelStore.get, () => false)
+    }
 
     /**
      * 请求宿主侧路由。
@@ -174,7 +232,7 @@ window.__ModuleLoader__.load({
      */
     function renderDiff(diff) {
       return diff.split('\n').map((line, index) => {
-        let color = '#c8c8d0'
+        let color = 'var(--dsw-alias-label-secondary)'
         let background = 'transparent'
         if (line.startsWith('+') && !line.startsWith('+++')) {
           color = '#b6e0c2'
@@ -185,7 +243,7 @@ window.__ModuleLoader__.load({
         } else if (line.startsWith('@@')) {
           color = '#8fb8ff'
         } else if (line.startsWith('diff ') || line.startsWith('index ') || line.startsWith('+++') || line.startsWith('---')) {
-          color = '#8a8a93'
+          color = 'var(--dsw-alias-label-tertiary)'
         }
         return react.createElement(
           'div',
@@ -232,7 +290,7 @@ window.__ModuleLoader__.load({
 
     /**
      * 由改动数据汇总出统计。
-     * @param result - `changes` 路由的响应。
+     * @param result - 路由响应。
      * @returns `{ files, added, removed }`。
      */
     function summarize(result) {
@@ -247,6 +305,309 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * 读取工作区级改动（相对 HEAD，不需要会话）。
+     *
+     * 项目页还没有任何一轮对话，因此"本轮改动"在那里无意义；这里读的是这个项目当前
+     * 有哪些未提交改动。
+     * @param workspace - 工作区路径。
+     * @returns `{ state, reload }`。
+     */
+    function useWorkspaceChanges(workspace) {
+      const [state, setState] = react.useState({ phase: 'loading' })
+
+      const reload = react.useCallback(async () => {
+        if (workspace === undefined) return
+        try {
+          const result = await call('workspace', { workspace })
+          setState({ phase: 'ready', result })
+        } catch (cause) {
+          setState({ phase: 'error', message: String(cause.message ?? cause) })
+        }
+      }, [workspace])
+
+      react.useEffect(() => {
+        void reload()
+      }, [reload])
+
+      return { state, reload }
+    }
+
+    /**
+     * 常驻的右侧面板。
+     *
+     * 自绘而不是用官方右侧栏：官方那套内容槽带 `scope: "session"`，在项目页（没有会话）
+     * 时不渲染，且 `sidebarRightTabs` 没有任何被采纳的会话——实测 `openTabIn` 会静默
+     * 返回而不报错。因此项目级面板只能自己管理。
+     *
+     * 位置用 fixed 相对视口，避免被祖先裁剪（此前自制浮层就因此在小窗口里只露出顶部）。
+     * @param props - `{ t, workspace, sessionId, scope, candidates, onPick }`。
+     */
+    function ReviewPanel(props) {
+      const { t, workspace, sessionId, scope, candidates, onPick } = props
+      const open = usePanelOpen()
+
+      // 两种语义分别取数据：本轮改动需要会话，工作区改动不需要。
+      const turn = useChanges(scope === 'workspace' ? undefined : workspace, sessionId)
+      const workspaceChanges = useWorkspaceChanges(scope === 'workspace' ? workspace : undefined)
+      const active = scope === 'workspace' ? workspaceChanges.state : turn.state
+
+      if (!open) return null
+
+      const { files, added, removed } = summarize(active.result)
+      const title = scope === 'workspace' ? t('projectTitle') : t('title')
+      const options = Array.isArray(candidates) ? candidates : []
+
+      return react.createElement(
+        'aside',
+        {
+          style: {
+            position: 'fixed',
+            top: 'clamp(12px, 6vh, 60px)',
+            right: 'clamp(8px, 2vw, 24px)',
+            bottom: 'clamp(12px, 6vh, 60px)',
+            zIndex: 9998,
+            width: 'min(520px, calc(100vw - 32px))',
+            display: 'flex',
+            flexDirection: 'column',
+            borderRadius: '10px',
+            border: '1px solid var(--dsw-alias-border-l2, #3d3d45)',
+            background: 'var(--dsw-alias-bg-base)',
+            boxShadow: '0 16px 48px rgba(0,0,0,.45)',
+            overflow: 'hidden',
+          },
+        },
+        react.createElement(
+          'div',
+          {
+            style: {
+              display: 'flex',
+              alignItems: 'center',
+              gap: '10px',
+              padding: '9px 12px',
+              borderBottom: '1px solid var(--dsw-alias-border-l1, #2f2f36)',
+              fontSize: '12.5px',
+              color: 'var(--dsw-alias-label-primary)',
+            },
+          },
+          react.createElement('strong', null, title),
+          react.createElement('span', { style: { color: 'var(--dsw-alias-label-tertiary)' } }, t('files', { count: files.length })),
+          react.createElement('span', { style: { flex: 1 } }),
+          react.createElement(
+            'button',
+            {
+              type: 'button',
+              onClick: () => panelStore.set(false),
+              title: t('collapse'),
+              'aria-label': t('collapse'),
+              style: {
+                border: '1px solid var(--dsw-alias-border-l2, #3d3d45)',
+                background: 'var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-layer-2, #2a2a31))',
+                color: 'var(--dsw-alias-label-primary)',
+                borderRadius: '6px',
+                width: '24px',
+                height: '24px',
+                cursor: 'pointer',
+                lineHeight: 1,
+              },
+            },
+            '×',
+          ),
+        ),
+        // 工作区选择器：只在项目级且有多个候选时出现。
+        //
+        // 为什么需要：全新状态下应用里可能还没有"当前工作区"（没有任何会话与登记项），
+        // 此时面板必须能列出候选让用户选，而不是猜一个路径。
+        scope === 'workspace' && options.length > 1 && typeof onPick === 'function'
+          ? react.createElement(
+              'div',
+              { style: { padding: '8px 12px 0' } },
+              react.createElement(
+                'select',
+                {
+                  value: workspace ?? '',
+                  onChange: (event) => onPick(event.target.value),
+                  style: {
+                    width: '100%',
+                    padding: '4px 6px',
+                    borderRadius: '6px',
+                    border: '1px solid var(--dsw-alias-border-l2, #3d3d45)',
+                    background: 'var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-layer-2, #26262c))',
+                    color: 'var(--dsw-alias-label-primary)',
+                    fontSize: '12px',
+                  },
+                },
+                options.map((option) =>
+                  react.createElement('option', { key: option, value: option }, option),
+                ),
+              ),
+            )
+          : null,
+        react.createElement(
+          'div',
+          { style: { overflowY: 'auto', padding: '8px 12px 12px' } },
+          react.createElement(FileList, {
+            t,
+            result: active.result,
+            phase: active.phase,
+            message: active.message,
+          }),
+        ),
+      )
+    }
+
+    /**
+     * 判断一个值像不像工作区路径。
+     * @param value - 候选值。
+     * @returns 是字符串且非空则返回它。
+     */
+    function asPath(value) {
+      return typeof value === 'string' && value !== '' ? value : undefined
+    }
+
+    /**
+     * 在项目页推断"当前工作区"。
+     *
+     * 项目页没有会话，因此没有 `sessionId → cwd` 这条现成的路。按可靠性依次尝试：
+     *   1. 最近会话的 cwd —— 用户实际使用时通常已有历史会话，这条最准；
+     *   2. 工作区列表里的第一项 —— 刚安装、还没有任何会话时的兜底。
+     * 两者都拿不到就不渲染入口，而不是猜一个路径（错误的路径只会得到 400）。
+     * @param props - 槽注入的属性。
+     * @returns 工作区路径；无法确定时 undefined。
+     */
+    function resolveProjectWorkspace(props) {
+      // 会话存储：通常由渲染器自动注入 useSessions。
+      if (typeof props?.useSessions === 'function') {
+        const recent = props.useSessions((state) => {
+          const list = state?.ids ?? []
+          for (let index = list.length - 1; index >= 0; index -= 1) {
+            const cwd = asPath(state?.byId?.[list[index]]?.cwd)
+            if (cwd !== undefined) return cwd
+          }
+          return undefined
+        })
+        if (recent !== undefined) return recent
+      }
+
+      // 工作区列表：形状是 `{ items: [...] }`。
+      if (typeof props?.useWorkspaces === 'function') {
+        const first = props.useWorkspaces((state) => {
+          const items = state?.items
+          if (!Array.isArray(items)) return undefined
+          for (const item of items) {
+            const root = asPath(item?.path ?? item?.root)
+            if (root !== undefined) return root
+          }
+          return undefined
+        })
+        if (first !== undefined) return first
+      }
+
+      return asPath(props?.workspace)
+    }
+
+    /**
+     * 读取**全部**已登记的工作区。
+     *
+     * 项目级面板需要它：全新状态下既没有会话也没有"当前工作区"，面板必须能列出候选并
+     * 让用户选，而不是猜一个路径（猜错只会得到 400 workspaceNotAllowed）。
+     * @param props - 槽注入的属性。
+     * @returns 工作区路径数组。
+     */
+    function useWorkspaceList(props) {
+      return typeof props?.useWorkspaces === 'function'
+        ? props.useWorkspaces((state) => {
+            const items = state?.items
+            if (!Array.isArray(items)) return []
+            return items.map((item) => asPath(item?.path ?? item?.root)).filter((value) => value !== undefined)
+          })
+        : []
+    }
+
+    /**
+     * 项目页（尚未进入会话）的常驻面板入口。
+     * @param props - 槽注入的属性。
+     */
+    function HeroChangesTrigger(props) {
+      const t = typeof props?.t === 'function' ? props.t : (key) => key
+      const open = usePanelOpen()
+      const candidates = useWorkspaceList(props)
+      const inferred = resolveProjectWorkspace(props)
+
+      // 用户手动选定的工作区优先；否则用推断出的那个。两者都没有就取第一个候选。
+      const [picked, setPicked] = react.useState(undefined)
+      const workspace = picked ?? inferred ?? candidates[0]
+      const [count, setCount] = react.useState(null)
+
+      react.useEffect(() => {
+        if (workspace === undefined) return undefined
+        let alive = true
+        const tick = async () => {
+          try {
+            const result = await call('workspace', { workspace })
+            if (alive) setCount(result?.isRepo === false ? null : (result?.files?.length ?? 0))
+          } catch {
+            if (alive) setCount(null)
+          }
+        }
+        void tick()
+        const timer = setInterval(() => void tick(), POLL_MS)
+        return () => {
+          alive = false
+          clearInterval(timer)
+        }
+      }, [workspace])
+
+      if (workspace === undefined) return null
+      const hasChanges = typeof count === 'number' && count > 0
+
+      return react.createElement(
+        'div',
+        { style: { display: 'inline-flex' } },
+        react.createElement(
+          'button',
+          {
+            type: 'button',
+            title: t('projectTitle'),
+            onClick: () => panelStore.set(!open),
+            style: {
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '6px',
+              padding: '0 10px',
+              height: '28px',
+              borderRadius: '6px',
+              border: '1px solid var(--dsw-alias-border-l2, #3d3d45)',
+              background: hasChanges || open ? '#2d4a7c' : 'var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-layer-2, #2a2a31))',
+              color: hasChanges || open ? '#cfe0ff' : 'var(--dsw-alias-label-secondary)',
+              fontSize: '12px',
+              fontFamily: 'ui-monospace, Consolas, monospace',
+              whiteSpace: 'nowrap',
+              cursor: 'pointer',
+            },
+          },
+          react.createElement(
+            'svg',
+            { width: 12, height: 12, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': 'true' },
+            react.createElement('path', {
+              d: 'M3 4.5h10M3 8h10M3 11.5h6',
+              stroke: 'currentColor',
+              strokeWidth: 1.3,
+              strokeLinecap: 'round',
+            }),
+          ),
+          react.createElement('span', null, count === null ? t('projectIdle') : t('files', { count })),
+        ),
+        react.createElement(ReviewPanel, {
+          t,
+          workspace,
+          scope: 'workspace',
+          candidates,
+          onPick: setPicked,
+        }),
+      )
+    }
+
+    /**
      * 文件列表：每行一个文件，点击展开该文件的差异。
      * @param props - `{ t, result, phase, message, workspace, sessionId }`。
      */
@@ -257,19 +618,28 @@ window.__ModuleLoader__.load({
       const byFile = react.useMemo(() => splitByFile(result?.diff ?? ''), [result?.diff])
 
       if (phase === 'loading') {
-        return react.createElement('div', { style: { color: '#8a8a93', fontSize: '12px', padding: '10px 2px' } }, t('loading'))
+        return react.createElement('div', { style: { color: 'var(--dsw-alias-label-tertiary)', fontSize: '12px', padding: '10px 2px' } }, t('loading'))
       }
       if (phase === 'error') {
         return react.createElement('div', { style: { color: '#f0c8c8', fontSize: '12px', padding: '10px 2px' } }, message)
       }
       if (result?.isRepo === false) {
-        return react.createElement('div', { style: { color: '#8a8a93', fontSize: '12px', padding: '10px 2px' } }, t('notRepo'))
+        return react.createElement('div', { style: { color: 'var(--dsw-alias-label-tertiary)', fontSize: '12px', padding: '10px 2px' } }, t('notRepo'))
+      }
+      if (result?.empty === true) {
+        return react.createElement(
+          'div',
+          { style: { color: 'var(--dsw-alias-label-tertiary)', fontSize: '12px', padding: '10px 2px' } },
+          t('workspaceEmpty'),
+        )
       }
       if (result?.noBaseline === true) {
-        return react.createElement('div', { style: { color: '#8a8a93', fontSize: '12px', padding: '10px 2px' } }, t('noBaseline'))
+        return react.createElement('div', { style: { color: 'var(--dsw-alias-label-tertiary)', fontSize: '12px', padding: '10px 2px' } }, t('noBaseline'))
       }
       if (files.length === 0) {
-        return react.createElement('div', { style: { color: '#8a8a93', fontSize: '12px', padding: '10px 2px' } }, t('clean'))
+        // 项目级与轮次级用不同措辞：前者是"没有未提交改动"，后者是"本轮没改文件"。
+        const key = result?.scope === 'workspace' ? 'workspaceClean' : 'clean'
+        return react.createElement('div', { style: { color: 'var(--dsw-alias-label-tertiary)', fontSize: '12px', padding: '10px 2px' } }, t(key))
       }
 
       return react.createElement(
@@ -277,7 +647,7 @@ window.__ModuleLoader__.load({
         { style: { display: 'flex', flexDirection: 'column', gap: '6px' } },
         react.createElement(
           'div',
-          { style: { fontSize: '11.5px', color: '#9a9aa2', padding: '0 2px' } },
+          { style: { fontSize: '11.5px', color: 'var(--dsw-alias-label-secondary)', padding: '0 2px' } },
           t('summary', { files: files.length, added, removed }),
         ),
         files.map((file) => {
@@ -299,17 +669,17 @@ window.__ModuleLoader__.load({
                   width: '100%',
                   textAlign: 'left',
                   padding: '6px 8px',
-                  border: '1px solid #2f2f36',
+                  border: '1px solid var(--dsw-alias-border-l1, #2f2f36)',
                   borderRadius: '6px',
-                  background: open ? '#2d4a7c' : '#26262c',
-                  color: '#e0e0e6',
+                  background: open ? '#2d4a7c' : 'var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-layer-2, #26262c))',
+                  color: 'var(--dsw-alias-label-primary)',
                   font: '12px ui-monospace, Consolas, monospace',
                   cursor: 'pointer',
                 },
               },
               react.createElement(
                 'span',
-                { style: { color: STATUS_COLORS[file.status?.[0]] ?? '#c8c8d0', minWidth: '38px', fontSize: '11px' } },
+                { style: { color: STATUS_COLORS[file.status?.[0]] ?? 'var(--dsw-alias-label-secondary)', minWidth: '38px', fontSize: '11px' } },
                 t(STATUS_KEYS[file.status?.[0]] ?? 'statusOther'),
               ),
               react.createElement(
@@ -332,16 +702,16 @@ window.__ModuleLoader__.load({
                     style: {
                       marginTop: '4px',
                       padding: '8px',
-                      border: '1px solid #2f2f36',
+                      border: '1px solid var(--dsw-alias-border-l1, #2f2f36)',
                       borderRadius: '6px',
-                      background: '#17171b',
+                      background: 'var(--dsw-alias-bg-layer-1, var(--dsw-alias-bg-layer-1, #17171b))',
                       fontSize: '11px',
                       lineHeight: '1.45',
                       overflow: 'hidden',
                     },
                   },
                   isBinaryDiff(diff)
-                    ? react.createElement('div', { style: { color: '#9a9aa2' } }, t('binaryDiff'))
+                    ? react.createElement('div', { style: { color: 'var(--dsw-alias-label-secondary)' } }, t('binaryDiff'))
                     : renderDiff(diff),
                 )
               : null,
@@ -492,9 +862,9 @@ window.__ModuleLoader__.load({
             padding: '0 8px',
             height: '28px',
             borderRadius: '6px',
-            border: `1px solid ${trouble === '' ? '#3d3d45' : '#6b3b3b'}`,
-            background: hasChanges ? '#2d4a7c' : '#2a2a31',
-            color: trouble === '' ? (hasChanges ? '#cfe0ff' : '#c8c8d0') : '#e6b0b0',
+            border: `1px solid ${trouble === '' ? 'var(--dsw-alias-border-l2, #3d3d45)' : '#6b3b3b'}`,
+            background: hasChanges ? '#2d4a7c' : 'var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-layer-2, #2a2a31))',
+            color: trouble === '' ? (hasChanges ? '#cfe0ff' : 'var(--dsw-alias-label-secondary)') : '#e6b0b0',
             fontSize: '12px',
             fontFamily: 'ui-monospace, Consolas, monospace',
             whiteSpace: 'nowrap',
@@ -550,6 +920,25 @@ window.__ModuleLoader__.load({
             ),
           ),
         'dsh-client-ui-review: review chip',
+      )
+
+      // 项目页的常驻面板入口。挂在这个槽位是因为它**在没有会话时也渲染**——
+      // 官方右侧栏的内容槽带 scope: "session"，项目页根本没有它（实测）。
+      ctx.effect(
+        () =>
+          ctx.slots.inject(HERO_SLOT, () =>
+            ctx.slots.register(
+              {
+                name: HERO_SLOT,
+                id: 'review-project-changes',
+                order: 30,
+                locale: NS,
+                inject: () => ({ t: ctx.locale.bind(NS) }),
+              },
+              HeroChangesTrigger,
+            ),
+          ),
+        'dsh-client-ui-review: project changes trigger',
       )
 
       // 把标签**类型**注册进侧边栏的类型表。

@@ -18,7 +18,10 @@ import { join } from 'node:path'
 
 const repo = mkdtempSync(join(tmpdir(), 'dsh-review-'))
 const runtime = join(process.cwd(), 'runtime')
-const home = join(process.cwd(), '.dev-home', 'home')
+// 独立的临时 HOME：与开发实例的 .dev-home 隔离。
+// 早先共用 .dev-home，而测试会往 storages/workspace.json 写记录，于是跑完测试
+// 开发实例就因"存储记录结构不符"起不来（这个坑重复了三次）。
+const home = mkdtempSync(join(tmpdir(), 'dsh-test-home-'))
 rmSync(home, { recursive: true, force: true })
 
 const run = (args, cwd) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' })

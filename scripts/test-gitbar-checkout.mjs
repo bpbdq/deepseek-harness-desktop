@@ -57,7 +57,10 @@ try {
 
   // ---- 起服务端（工作区指向临时仓库）------------------------------------
   const runtime = join(process.cwd(), 'runtime')
-  const home = join(process.cwd(), '.dev-home', 'home')
+  // 独立的临时 HOME：与开发实例的 .dev-home 隔离。
+// 早先共用 .dev-home，而测试会往 storages/workspace.json 写记录，于是跑完测试
+// 开发实例就因"存储记录结构不符"起不来（这个坑重复了三次）。
+const home = mkdtempSync(join(tmpdir(), 'dsh-test-home-'))
   rmSync(home, { recursive: true, force: true })
   child = spawn(
     join(runtime, 'node', 'node.exe'),

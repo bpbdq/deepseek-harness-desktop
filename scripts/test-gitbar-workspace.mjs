@@ -8,13 +8,17 @@
 //   3. 传另一个真实仓库    -> 200，分支属于**那个**仓库（证明会跟着 cwd 变）
 //   4. 传未登记的路径      -> 400（安全边界：不能让页面命令 host 对任意目录跑 git）
 import { spawn } from 'node:child_process'
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 const SHELL_WS = 'E:\\workspace\\mmsm-amis'
 const OTHER_WS = 'E:\\workspace\\emdp'
 const runtime = join(process.cwd(), 'runtime')
-const home = join(process.cwd(), '.dev-home', 'home')
+// 独立的临时 HOME：与开发实例的 .dev-home 隔离。
+// 早先共用 .dev-home，而测试会往 storages/workspace.json 写记录，于是跑完测试
+// 开发实例就因"存储记录结构不符"起不来（这个坑重复了三次）。
+const home = mkdtempSync(join(tmpdir(), 'dsh-test-home-'))
 
 rmSync(home, { recursive: true, force: true })
 
