@@ -259,43 +259,180 @@ window.__ModuleLoader__.load({
 
     /**
      * 渲染差异文本。
+    /**
+     * 差异视图的配色。
      *
-     * 只做最小的行级着色（增/删/文件头），不引入差异解析库：要的是"看清楚改了什么"，
-     * 而不是一个完整的 diff 浏览器。
+     * **必须分浅色与深色两套**：此前只有一套为深色底设计的配色（浅绿/浅红的文字），
+     * 一旦界面是浅色主题，浅色文字叠在浅色底上就完全糊成一片——这正是"变动记录看不清"
+     * 的根因。深浅两套都保证文字与底色的对比度足够。
+     * @param dark - 当前是否为深色主题。
+     * @returns 各类行的配色。
+     */
+    function diffPalette(dark) {
+      return dark
+        ? {
+            context: 'var(--dsw-alias-label-secondary)',
+            // 增删行用"低饱和底色 + 高对比文字"，而不是把文字本身染成浅绿/浅红。
+            addBg: 'rgba(63,185,110,.15)',
+            addFg: '#a8e6c0',
+            delBg: 'rgba(220,90,90,.15)',
+            delFg: '#f0b9b9',
+            hunk: '#8fb8ff',
+            meta: 'var(--dsw-alias-label-tertiary)',
+            gutter: 'rgba(255,255,255,.04)',
+            gutterFg: 'var(--dsw-alias-label-tertiary)',
+          }
+        : {
+            context: 'var(--dsw-alias-label-primary)',
+            addBg: 'rgba(46,160,67,.14)',
+            addFg: '#0b6b2a',
+            delBg: 'rgba(207,60,60,.13)',
+            delFg: '#a02525',
+            hunk: '#2f5aa8',
+            meta: 'var(--dsw-alias-label-tertiary)',
+            gutter: 'rgba(0,0,0,.04)',
+            gutterFg: 'var(--dsw-alias-label-tertiary)',
+          }
+    }
+
+    /**
+     * 判断当前是否为深色主题。
      *
-     * 长行处理：`whiteSpace: 'pre-wrap'` 配合 `overflowWrap: 'anywhere'`，使超长行折行
-     * 而不是把容器撑宽——这是"乱码/看不出改动"观感的主要来源之一。
-     * @param diff - 统一差异文本。
+     * 读页面根元素的实际计算值，而不是猜：应用的浅色/深色由官方主题服务写在 CSS 变量上，
+     * 直接读背景色的亮度最可靠。
+     * @returns 深色则 true。
+     */
+    function isDarkTheme() {
+      try {
+        const raw = getComputedStyle(document.documentElement).getPropertyValue('--dsw-alias-bg-base').trim()
+        const match = /#([0-9a-f]{6})/iu.exec(raw)
+        if (match !== null) {
+          const value = Number.parseInt(match[1], 16)
+          const r = (value >> 16) & 255
+          const g = (value >> 8) & 255
+          const b = value & 255
+          return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255 < 0.5
+        }
+      } catch {
+        // 读不到就按浅色处理：浅色下对比度不足比深色下更明显，宁可偏向它。
+      }
+      return false
+    }
+
+    /**
+     * 把统一差异解析成带行号的行。
+     *
+     * 行号是"看清改动"的关键：只有增删标记而没有位置，很难判断改在文件的哪一处。
+     * 解析 `@@ -a,b +c,d @@` 得到两侧的起始行号，然后逐行推进。
+     * @param diff - 单个文件的统一差异文本。
+     * @returns `{ kind, oldLine, newLine, text }` 数组；kind 为 meta/context/add/del。
+     */
+    function parseDiffRows(diff) {
+      const rows = []
+      let oldLine = 0
+      let newLine = 0
+      for (const raw of diff.split('\n')) {
+        // 文件头与索引行：不作为代码行显示，避免与空行混淆。
+        if (/^(diff --git|index |--- |\+\+\+ |new file mode|deleted file mode|similarity index|rename )/u.test(raw)) {
+          rows.push({ kind: 'meta', text: raw })
+          continue
+        }
+        const hunk = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/u.exec(raw)
+        if (hunk !== null) {
+          oldLine = Number(hunk[1])
+          newLine = Number(hunk[2])
+          rows.push({ kind: 'hunk', text: raw })
+          continue
+        }
+        if (raw.startsWith('+')) {
+          rows.push({ kind: 'add', newLine, text: raw.slice(1) })
+          newLine += 1
+          continue
+        }
+        if (raw.startsWith('-')) {
+          rows.push({ kind: 'del', oldLine, text: raw.slice(1) })
+          oldLine += 1
+          continue
+        }
+        if (raw.startsWith('\\')) {
+          // `\ No newline at end of file`：原样显示，不占行号。
+          rows.push({ kind: 'meta', text: raw })
+          continue
+        }
+        rows.push({ kind: 'context', oldLine, newLine, text: raw.startsWith(' ') ? raw.slice(1) : raw })
+        oldLine += 1
+        newLine += 1
+      }
+      return rows
+    }
+
+    /**
+     * 渲染差异：行号 + 增删着色，参照 IDE/Codex 的差异视图。
+     *
+     * 设计取舍：
+     *   * 行号固定宽度、右对齐，便于纵向扫读；
+     *   * 增删只用底色区分，文字保持高对比——把文字染成浅绿/浅红在浅色主题下会糊掉；
+     *   * 长行用 `pre-wrap` + `overflowWrap` 折行，不把容器撑宽。
+     * @param diff - 单个文件的统一差异文本。
      * @returns React 元素数组。
      */
     function renderDiff(diff) {
-      return diff.split('\n').map((line, index) => {
-        let color = 'var(--dsw-alias-label-secondary)'
-        let background = 'transparent'
-        if (line.startsWith('+') && !line.startsWith('+++')) {
-          color = '#b6e0c2'
-          background = 'rgba(60,140,90,.16)'
-        } else if (line.startsWith('-') && !line.startsWith('---')) {
-          color = '#f0c8c8'
-          background = 'rgba(160,70,70,.16)'
-        } else if (line.startsWith('@@')) {
-          color = '#8fb8ff'
-        } else if (line.startsWith('diff ') || line.startsWith('index ') || line.startsWith('+++') || line.startsWith('---')) {
-          color = 'var(--dsw-alias-label-tertiary)'
-        }
+      const palette = diffPalette(isDarkTheme())
+      const rows = parseDiffRows(diff)
+      return rows.map((row, index) => {
+        const background =
+          row.kind === 'add' ? palette.addBg : row.kind === 'del' ? palette.delBg : 'transparent'
+        const fg =
+          row.kind === 'add'
+            ? palette.addFg
+            : row.kind === 'del'
+              ? palette.delFg
+              : row.kind === 'hunk'
+                ? palette.hunk
+                : row.kind === 'meta'
+                  ? palette.meta
+                  : palette.context
+        const marker = row.kind === 'add' ? '+' : row.kind === 'del' ? '−' : ' '
         return react.createElement(
           'div',
           {
             key: index,
             style: {
-              color,
+              display: 'flex',
+              gap: '10px',
               background,
-              whiteSpace: 'pre-wrap',
-              overflowWrap: 'anywhere',
-              fontVariantLigatures: 'none',
+              color: fg,
+              lineHeight: '1.5',
             },
           },
-          line === '' ? ' ' : line,
+          // 行号栏：删除行只显示旧行号，新增行只显示新行号，上下文行两侧都有。
+          react.createElement(
+            'span',
+            {
+              style: {
+                flex: '0 0 auto',
+                display: 'flex',
+                gap: '6px',
+                padding: '0 6px',
+                background: palette.gutter,
+                color: palette.gutterFg,
+                textAlign: 'right',
+                userSelect: 'none',
+              },
+            },
+            react.createElement('span', { style: { minWidth: '32px' } }, row.oldLine === undefined ? '' : String(row.oldLine)),
+            react.createElement('span', { style: { minWidth: '32px' } }, row.newLine === undefined ? '' : String(row.newLine)),
+          ),
+          react.createElement(
+            'span',
+            { style: { flex: '0 0 auto', width: '8px', textAlign: 'center', opacity: 0.7 } },
+            row.kind === 'hunk' || row.kind === 'meta' ? '' : marker,
+          ),
+          react.createElement(
+            'span',
+            { style: { flex: '1 1 auto', minWidth: 0, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' } },
+            row.text === '' ? ' ' : row.text,
+          ),
         )
       })
     }
@@ -1025,18 +1162,24 @@ window.__ModuleLoader__.load({
                   {
                     style: {
                       marginTop: '4px',
-                      padding: '8px',
+                      padding: '0',
                       border: '1px solid var(--dsw-alias-border-l1, #2f2f36)',
                       borderRadius: '6px',
-                      background: 'var(--dsw-alias-bg-layer-1, var(--dsw-alias-bg-layer-1, #17171b))',
-                      fontSize: '11px',
-                      lineHeight: '1.45',
-                      overflow: 'hidden',
+                      background: 'var(--dsw-alias-bg-layer-1, #17171b)',
+                      // 等宽字体是差异视图可读的基础：比例字体下增删对齐会全乱。
+                      font: '11.5px/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace',
+                      fontVariantLigatures: 'none',
+                      // 横向溢出才滚动；纵向交给抽屉整体，避免嵌套滚动条。
+                      overflowX: 'auto',
                     },
                   },
                   isBinaryDiff(diff)
-                    ? react.createElement('div', { style: { color: 'var(--dsw-alias-label-secondary)' } }, t('binaryDiff'))
-                    : renderDiff(diff),
+                    ? react.createElement(
+                        'div',
+                        { style: { color: 'var(--dsw-alias-label-secondary)', padding: '8px' } },
+                        t('binaryDiff'),
+                      )
+                    : react.createElement('div', { style: { padding: '6px 0' } }, renderDiff(diff)),
                 )
               : null,
           )
