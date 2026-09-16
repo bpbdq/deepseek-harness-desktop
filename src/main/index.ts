@@ -132,9 +132,15 @@ async function main(): Promise<void> {
   // names from package.json) and a packaged run (which it names from
   // productName). The window title and installer name carry the display name.
   //
-  // The dark source also gives the (now visible) menu bar dark styling on Windows
-  // so it does not read as a light strip above the dark web UI.
-  nativeTheme.themeSource = 'dark'
+  // 跟随系统外观，而不是写死深色。
+  //
+  // 此前写成 'dark'，理由是"菜单栏在深色下更协调"。但它的影响远不止菜单栏：
+  // Electron 的 themeSource 会让 Chromium 上报 prefers-color-scheme，而官方界面正是用
+  // `matchMedia('(prefers-color-scheme: dark)')` 决定配色的（见 dsh-client-ui-theme）。
+  // 于是写死深色等于**替用户忽略了他们自己选的浅色**——用户把系统设成浅色，界面依旧发黑。
+  //
+  // 'system' 让原生外观（菜单栏、原生对话框）与网页外观都跟随系统，两侧因此一致。
+  nativeTheme.themeSource = 'system'
   await app.whenReady()
 
   // Localization must be resolved after ready: the system locale is not available

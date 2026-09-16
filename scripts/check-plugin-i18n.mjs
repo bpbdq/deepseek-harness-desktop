@@ -43,6 +43,12 @@ lines.forEach((line, index) => {
   // 注释里的中文是说明，不是界面文案。
   if (trimmed.startsWith('//') || trimmed.startsWith('*') || trimmed.startsWith('/*')) return
   if (inDictionary(index)) return
+  // 显式豁免的诊断信息。
+  //
+  // 有些中文是给开发者看的（例如把服务实际提供的键名列进错误信息），它含技术细节，
+  // 翻译反而无益。这类行以 `i18n-allow` 标记，比放宽整体规则更精确——也让人一眼看出
+  // 那是有意为之，而不是漏掉了本地化。
+  if (/i18n-allow/u.test(line)) return
   if (!HAN.test(line)) return
   findings.push({ line: index + 1, text: trimmed.slice(0, 100) })
 })
