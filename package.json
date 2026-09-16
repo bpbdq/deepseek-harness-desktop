@@ -25,6 +25,7 @@
     "dist:all": "npm run build && npm run stage && electron-builder --win --linux --x64",
     "release": "npm run dist:win && electron-builder --publish always",
     "test:i18n": "node scripts/test-i18n.cjs",
+    "test:ui-typography": "node scripts/test-ui-typography.cjs",
     "test:update-window": "npm run build && node scripts/test-update-window.cjs",
     "test:startup": "npm run build && node scripts/test-startup.mjs && node scripts/test-startup-window.cjs",
     "benchmark:startup": "npm run build && node scripts/benchmark-startup.mjs",
