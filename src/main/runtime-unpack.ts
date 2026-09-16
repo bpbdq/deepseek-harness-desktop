@@ -13,13 +13,16 @@
  * 解包位置很关键：**不能放在 `<userData>/runtime`**——那是运行时自动更新的地盘
  * （它在那里管理 `<版本>/` 目录与 `current` 联接）。放在旁边互不干扰。
  *
- * 实现上刻意用"同步状态机 + 异步喂数据"：解压流按块到达，状态机在块之间保留进度。
- * 早先写成"既 for-await 消费解压流、又把归档 pipeline 进去"是矛盾的，会死锁——
- * 这是本项目里最容易写错的一处，所以逻辑集中在一个地方、且可被单测覆盖。
+ * 单条 pipeline 推进归档状态机；有界异步文件写入为解压流提供背压。
+ * 缓存已创建目录，避免每个文件重复 mkdir，也不阻塞 Electron 主线程等待磁盘。
  */
-import { createReadStream, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs'
+import { mkdir, rm, writeFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
+import { Writable } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
 import { createBrotliDecompress } from 'node:zlib'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve, sep } from 'node:path'
 
 /** 归档的魔数，用于识别格式与版本。 */
 const MAGIC = Buffer.from('DSHRT1\n', 'utf8')
@@ -46,6 +49,10 @@ export interface UnpackResult {
  * 以内存换实现简单是划算的——流式写会引入跨块的文件句柄状态，是这类代码最容易出错的地方。
  */
 class ArchiveReader {
+  private readonly directories = new Map<string, Promise<void>>()
+  private readonly writes = new Set<Promise<void>>()
+  private bufferedBytes = 0
+  private writeError: Error | undefined
   /** 未消费的字节。显式标注为 Buffer 以免被推断成 Buffer<ArrayBuffer>（与 slice 结果不兼容）。 */
   private buffer: Buffer = Buffer.alloc(0)
   /** 当前阶段。 */
@@ -75,7 +82,7 @@ class ArchiveReader {
    * 喂入一块数据，尽可能多地推进解析。
    * @param chunk - 解压后的字节。
    */
-  push(chunk: Buffer): void {
+  async push(chunk: Buffer): Promise<void> {
     this.buffer = this.buffer.length === 0 ? chunk : Buffer.concat([this.buffer, chunk])
 
     for (;;) {
@@ -99,6 +106,7 @@ class ArchiveReader {
           this.phase = 'done'
           return
         }
+        if (headerLength > 65536) throw new Error('runtime 归档头过大')
         this.headerLength = headerLength
         this.phase = 'header'
         continue
@@ -111,6 +119,9 @@ class ArchiveReader {
           path: string
           size: number
           mode: number
+        }
+        if (typeof this.pending.path !== 'string' || !Number.isSafeInteger(this.pending.size) || this.pending.size < 0) {
+          throw new Error('runtime 归档记录无效')
         }
         this.buffer = this.buffer.subarray(need)
         this.headerLength = undefined
@@ -135,7 +146,8 @@ class ArchiveReader {
           this.received += take
           if (this.received < record.size) return
         }
-        this.writeRecord(record, Buffer.concat(this.pieces))
+        await this.writeRecord(record, this.pieces.length === 1 ? this.pieces[0]! : Buffer.concat(this.pieces))
+        this.pieces = []
         this.pending = undefined
         this.phase = 'length'
         continue
@@ -147,22 +159,60 @@ class ArchiveReader {
   private headerLength: number | undefined
 
   /** 落盘一条记录。 */
-  private writeRecord(record: { path: string; size: number; mode: number }, content: Buffer): void {
-    const target = join(this.root, ...record.path.split('/'))
-    mkdirSync(dirname(target), { recursive: true })
-    writeFileSync(target, content, { mode: record.mode })
-    this.files += 1
-    this.bytes += content.length
+  private async writeRecord(record: { path: string; size: number; mode: number }, content: Buffer): Promise<void> {
+    const target = resolve(this.root, record.path)
+    if (!target.startsWith(resolve(this.root) + sep)) throw new Error('runtime 归档路径越界')
+    const directory = dirname(target)
+    let created = this.directories.get(directory)
+    if (created === undefined) {
+      created = mkdir(directory, { recursive: true }).then(() => {})
+      this.directories.set(directory, created)
+    }
+    this.bufferedBytes += content.length
+    const task = created.then(() => writeFile(target, content, { mode: record.mode })).then(() => {
+      this.files += 1
+      this.bytes += content.length
+    }).catch((error: unknown) => {
+      this.writeError ??= error instanceof Error ? error : new Error(String(error))
+    }).finally(() => {
+      this.bufferedBytes -= content.length
+    })
+    this.writes.add(task)
+    void task.then(() => this.writes.delete(task))
+    // Bound both open files and buffered content; let disk writes overlap decompression.
+    while (this.writes.size >= 16 || (this.bufferedBytes > 32 * 1024 * 1024 && this.writes.size > 0)) {
+      await Promise.race(this.writes)
+    }
+    if (this.writeError !== undefined) throw this.writeError
     // 注意：这里**不**上报进度。解压后的字节数与归档大小不是同一量纲，用它算百分比
     // 会得到 400% 以上。进度由调用方按"已读取的归档字节"上报。
+  }
+
+  async drain(): Promise<void> {
+    await Promise.all(this.writes)
+    if (this.writeError !== undefined) throw this.writeError
+  }
+}
+
+/** Content identity is written at build time; file timestamps change on installation. */
+function archiveIdentity(archivePath: string): string | undefined {
+  try {
+    const manifest = JSON.parse(readFileSync(join(dirname(archivePath), 'runtime.json'), 'utf8')) as {
+      format?: string; contentHash?: string; archiveBytes?: number
+    }
+    return manifest.format === 'dsh-runtime-archive' && manifest.archiveBytes === statSync(archivePath).size &&
+      typeof manifest.contentHash === 'string' && /^[a-f0-9]{64}$/u.test(manifest.contentHash)
+      ? manifest.contentHash : undefined
+  } catch {
+    return undefined
   }
 }
 
 /**
  * 判断已解包的运行时是否可直接复用。
  *
- * 依据标记文件里的归档大小与修改时间：归档换了（新版本安装包）就要重新解。只比大小
- * 不够——两个版本大小相同虽罕见但并非不可能。
+ * 新归档按构建时生成的内容摘要复用，不受安装器修改时间戳的影响。
+ * 旧归档没有摘要时，保留大小与修改时间的兼容判断。
  * @param dir - 解包根目录。
  * @param archivePath - 当前归档路径。
  * @returns 可复用时返回解包根目录，否则 undefined。
@@ -171,13 +221,17 @@ export function reusableUnpacked(dir: string, archivePath: string): string | und
   const markerPath = join(dir, MARKER)
   if (!existsSync(markerPath)) return undefined
   try {
-    const marker = JSON.parse(readFileSync(markerPath, 'utf8')) as { bytes?: number; mtimeMs?: number }
+    const marker = JSON.parse(readFileSync(markerPath, 'utf8')) as { bytes?: number; mtimeMs?: number; contentHash?: string }
     const stats = statSync(archivePath)
-    if (marker.bytes !== stats.size || marker.mtimeMs !== Math.round(stats.mtimeMs)) return undefined
+    const identity = archiveIdentity(archivePath)
+    if (identity !== undefined) {
+      if (marker.contentHash !== identity) return undefined
+    } else if (marker.bytes !== stats.size || marker.mtimeMs !== Math.round(stats.mtimeMs)) return undefined
     // 至少能看到 node 可执行文件，否则视为解包不完整。
     const hasNode =
       existsSync(join(dir, 'runtime', 'node', 'node.exe')) || existsSync(join(dir, 'runtime', 'node', 'bin', 'node'))
-    return hasNode ? dir : undefined
+    const hasAnchor = existsSync(join(dir, 'runtime', 'node_modules', '@deepseek-ai', 'dsh', 'package.json'))
+    return hasNode && hasAnchor ? dir : undefined
   } catch {
     return undefined
   }
@@ -204,49 +258,47 @@ export async function ensureRuntimeUnpacked(
 
   const archiveStats = statSync(archivePath)
   // 重新解包前清干净，避免上一版残留混在里面。
-  rmSync(dir, { recursive: true, force: true })
+  await rm(dir, { recursive: true, force: true })
   const root = join(dir, 'runtime')
-  mkdirSync(root, { recursive: true })
+  await mkdir(root, { recursive: true })
 
   const reader = new ArchiveReader(root)
-  const decompress = createBrotliDecompress()
+  const decompress = createBrotliDecompress({ chunkSize: 256 * 1024 })
+  const contentHash = createHash('sha256')
+  const identity = archiveIdentity(archivePath)
 
   // 进度按**已读取的归档字节**上报：这与归档总大小同一量纲，百分比因此必然落在 0-100。
   //
   // 踩过的坑：最初用"已写出的解压后字节数"除以归档总大小，界面显示到 444%
   // （197.6 MB 除以 42.9 MB）。两个量纲不同的数不能相比。
   let readBytes = 0
-  await new Promise<void>((resolve, reject) => {
-    const source = createReadStream(archivePath)
-    source.on('error', reject)
+  try {
+    const source = createReadStream(archivePath, { highWaterMark: 256 * 1024 })
     source.on('data', (chunk: Buffer | string) => {
       readBytes += typeof chunk === 'string' ? Buffer.byteLength(chunk) : chunk.length
       onProgress?.(readBytes, archiveStats.size)
     })
-    decompress.on('error', reject)
-    decompress.on('data', (chunk: Buffer) => {
-      try {
-        reader.push(chunk)
-      } catch (error) {
-        decompress.destroy()
-        reject(error instanceof Error ? error : new Error(String(error)))
-      }
-    })
-    decompress.on('end', () => {
-      if (reader.finished) resolve()
-      else reject(new Error(`runtime 归档不完整（已解 ${reader.files} 个文件）`))
-    })
-    source.pipe(decompress)
-  }).catch((error: unknown) => {
+    await pipeline(source, decompress, new Writable({
+      write(chunk: Buffer, _encoding, callback) {
+        contentHash.update(chunk)
+        reader.push(chunk).then(() => callback(), callback)
+      },
+    }))
+    await reader.drain()
+    if (!reader.finished) throw new Error(`runtime 归档不完整（已解 ${reader.files} 个文件）`)
+    const digest = contentHash.digest('hex')
+    if (identity !== undefined && identity !== digest) throw new Error('runtime 归档内容校验失败')
+    await writeFile(
+      join(dir, MARKER),
+      JSON.stringify({ bytes: archiveStats.size, mtimeMs: Math.round(archiveStats.mtimeMs), files: reader.files, contentHash: digest }, null, 2) + '\n',
+    )
+  } catch (error) {
+    // Drain in-flight writes before deleting a failed extraction.
+    await reader.drain().catch(() => {})
     // 解包失败就把半成品删掉，避免下次误判为"已解包可用"。
-    rmSync(dir, { recursive: true, force: true })
+    await rm(dir, { recursive: true, force: true })
     throw error
-  })
-
-  writeFileSync(
-    join(dir, MARKER),
-    JSON.stringify({ bytes: archiveStats.size, mtimeMs: Math.round(archiveStats.mtimeMs), files: reader.files }, null, 2) + '\n',
-  )
+  }
 
   return { dir, unpacked: true, files: reader.files }
 }

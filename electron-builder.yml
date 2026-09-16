@@ -47,6 +47,7 @@ extraResources:
     to: server
     filter:
       - 'server.mjs'
+      - 'client-module-cache.mjs'
   - from: build/icon.png
     to: icon.png
 
