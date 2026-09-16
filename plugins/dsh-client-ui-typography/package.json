@@ -1,0 +1,22 @@
+{
+  "name": "dsh-client-ui-typography",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Persistent, proportional UI typography independent of conversation font size.",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": { "platform": "web", "inject": [], "external": [] }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/schemastery": "*"
+  }
+}
