@@ -97,6 +97,8 @@ window.__ModuleLoader__.load({
       collapse: '收起面板',
       revert: '还原',
       revertConfirm: '确认还原',
+      revertConfirmTitle: '确认还原这个文件？',
+      revertConfirmBody: '文件内容将恢复为基线状态；本轮新建的文件会被删除。',
       reverting: '还原中…',
       revertFailed: '还原失败：{message}',
       historyTitle: '最近提交',
@@ -129,6 +131,8 @@ window.__ModuleLoader__.load({
       collapse: 'Collapse panel',
       revert: 'Revert',
       revertConfirm: 'Confirm revert',
+      revertConfirmTitle: 'Revert this file?',
+      revertConfirmBody: 'Its content goes back to the baseline; a file created this turn is deleted.',
       reverting: 'Reverting…',
       revertFailed: 'Revert failed: {message}',
       historyTitle: 'Recent commits',
@@ -1042,13 +1046,132 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * 还原确认弹窗。
+     *
+     * 用弹窗而不是"再点一次按钮"的二次确认：后者有两个问题——按钮本身很小、第二次点击
+     * 容易落空（用户会感觉"点了没反应"）；而且按钮的 `onBlur` 会在点到别处时把确认态
+     * 清掉，操作显得不可靠。弹窗把"要还原哪个文件"讲清楚，再让用户明确决定。
+     * @param props - `{ t, path, onCancel, onConfirm, busy }`。
+     */
+    function ConfirmRevertDialog(props) {
+      const { t, path, onCancel, onConfirm, busy } = props
+      // Esc 取消：与其它面板一致，也让键盘用户能退出。
+      react.useEffect(() => {
+        const onKeyDown = (event) => {
+          if (event.key === 'Escape') onCancel()
+        }
+        document.addEventListener('keydown', onKeyDown)
+        return () => document.removeEventListener('keydown', onKeyDown)
+      }, [onCancel])
+
+      return react.createElement(
+        'div',
+        {
+          // 遮罩：点击遮罩即取消。放在抽屉之上。
+          onClick: onCancel,
+          style: {
+            position: 'fixed',
+            inset: 0,
+            zIndex: 10000,
+            background: 'rgba(0,0,0,.35)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          },
+        },
+        react.createElement(
+          'div',
+          {
+            // 阻止冒泡：点弹窗内部不该被遮罩的 onClick 当成"取消"。
+            onClick: (event) => event.stopPropagation(),
+            role: 'dialog',
+            'aria-modal': 'true',
+            style: {
+              width: 'min(420px, calc(100vw - 48px))',
+              borderRadius: '10px',
+              border: '1px solid var(--dsw-alias-border-l2, #3d3d45)',
+              background: 'var(--dsw-alias-bg-overlay, #1f1f24)',
+              color: 'var(--dsw-alias-label-primary)',
+              boxShadow: '0 16px 48px rgba(0,0,0,.45)',
+              padding: '16px 18px',
+              fontSize: '13px',
+              lineHeight: '1.6',
+            },
+          },
+          react.createElement('div', { style: { fontWeight: 600, marginBottom: '8px' } }, t('revertConfirmTitle')),
+          react.createElement(
+            'div',
+            { style: { color: 'var(--dsw-alias-label-secondary)', marginBottom: '6px' } },
+            t('revertConfirmBody'),
+          ),
+          react.createElement(
+            'div',
+            {
+              style: {
+                font: '12px ui-monospace, Consolas, monospace',
+                padding: '6px 8px',
+                borderRadius: '6px',
+                background: 'var(--dsw-alias-bg-layer-2, #26262c)',
+                wordBreak: 'break-all',
+                marginBottom: '14px',
+              },
+            },
+            path,
+          ),
+          react.createElement(
+            'div',
+            { style: { display: 'flex', justifyContent: 'flex-end', gap: '8px' } },
+            react.createElement(
+              'button',
+              {
+                type: 'button',
+                onClick: onCancel,
+                disabled: busy,
+                style: {
+                  padding: '5px 14px',
+                  borderRadius: '6px',
+                  border: '1px solid var(--dsw-alias-border-l2, #3d3d45)',
+                  background: 'var(--dsw-alias-bg-layer-2, #26262c)',
+                  color: 'var(--dsw-alias-label-primary)',
+                  font: 'inherit',
+                  cursor: busy ? 'default' : 'pointer',
+                },
+              },
+              t('revertCancel'),
+            ),
+            react.createElement(
+              'button',
+              {
+                type: 'button',
+                onClick: onConfirm,
+                disabled: busy,
+                style: {
+                  padding: '5px 14px',
+                  borderRadius: '6px',
+                  border: '1px solid #8b5a5a',
+                  background: '#6b3b3b',
+                  color: '#ffdede',
+                  font: 'inherit',
+                  cursor: busy ? 'default' : 'pointer',
+                },
+              },
+              busy ? t('reverting') : t('revert'),
+            ),
+          ),
+        ),
+      )
+    }
+
+    /**
      * 文件列表：每行一个文件，点击展开该文件的差异。
      * @param props - `{ t, result, phase, message, workspace, sessionId }`。
      */
     function FileList(props) {
       const { t, result, phase, message } = props
       const [expanded, setExpanded] = react.useState('')
-      // 待确认还原的路径：还原是写操作，必须二次确认，因此先记下来再让用户点确认。
+      // 待确认还原的路径：还原是写操作，必须确认——但用**弹窗**确认，而不是"再点一次
+      // 这个按钮"。后者的问题：按钮很小、第二次点击容易落空（用户会感觉"点了没反应"），
+      // 而且 onBlur 会在点到别处时把确认态清掉。
       const [confirming, setConfirming] = react.useState('')
       const [busy, setBusy] = react.useState('')
       const [trouble, setTrouble] = react.useState('')
@@ -1117,7 +1240,6 @@ window.__ModuleLoader__.load({
         files.map((file) => {
           const diff = byFile.get(file.path) ?? ''
           const open = expanded === file.path
-          const wantsRevert = confirming === file.path
           const working = busy === file.path
           return react.createElement(
             'div',
@@ -1165,30 +1287,28 @@ window.__ModuleLoader__.load({
                   react.createElement('span', { style: { color: '#e0a0a0' } }, `−${file.removed ?? 0}`),
                 ),
               ),
-              // 还原按钮。首次点击进入确认态，再点一次才真正还原——这是写操作，
-              // 不该一击生效（误点会丢掉用户自己的改动）。
+              // 还原按钮：点击后弹出确认框（见 ConfirmRevertDialog）。
               react.createElement(
                 'button',
                 {
                   type: 'button',
                   disabled: working,
-                  title: wantsRevert ? t('revertConfirm') : t('revert'),
-                  onClick: () => (wantsRevert ? void revert(file.path) : setConfirming(file.path)),
-                  onBlur: () => setConfirming((current) => (current === file.path ? '' : current)),
+                  title: t('revert'),
+                  onClick: () => setConfirming(file.path),
                   style: {
                     flex: '0 0 auto',
                     padding: '0 8px',
                     borderRadius: '6px',
-                    border: `1px solid ${wantsRevert ? '#8b5a5a' : 'var(--dsw-alias-border-l1, #2f2f36)'}`,
-                    background: wantsRevert ? '#6b3b3b' : 'var(--dsw-alias-bg-layer-2, #26262c)',
-                    color: wantsRevert ? '#ffdede' : 'var(--dsw-alias-label-secondary)',
+                    border: '1px solid var(--dsw-alias-border-l1, #2f2f36)',
+                    background: 'var(--dsw-alias-bg-layer-2, #26262c)',
+                    color: 'var(--dsw-alias-label-secondary)',
                     fontSize: '11px',
                     fontFamily: 'inherit',
                     cursor: working ? 'default' : 'pointer',
                     whiteSpace: 'nowrap',
                   },
                 },
-                working ? t('reverting') : wantsRevert ? t('revertConfirm') : t('revert'),
+                working ? t('reverting') : t('revert'),
               ),
             ),
             open
@@ -1222,6 +1342,16 @@ window.__ModuleLoader__.load({
         result?.truncated === true
           ? react.createElement('div', { style: { marginTop: '4px', color: '#c9a0a0', fontSize: '11.5px' } }, t('truncated'))
           : null,
+        // 确认弹窗：还原是写操作，必须让用户明确决定。
+        confirming === ''
+          ? null
+          : react.createElement(ConfirmRevertDialog, {
+              t,
+              path: confirming,
+              busy: busy === confirming,
+              onCancel: () => setConfirming(''),
+              onConfirm: () => void revert(confirming),
+            }),
       )
     }
 
