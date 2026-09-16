@@ -15,7 +15,7 @@
 // 只对变化的文件重新哈希）。
 import { execFile } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync } from 'node:fs'
-import { isAbsolute, join } from 'node:path'
+import { isAbsolute, join, resolve } from 'node:path'
 
 /** 插件名，用于诊断与 effect 标签。 */
 export const name = 'review'
@@ -493,8 +493,31 @@ function createReviewHandler() {
 
         // `git restore --source <rev> --worktree -- <paths>`：只动工作区，不动索引与 HEAD。
         // 用 `--` 分隔，避免路径被当成选项（git 的一条经典陷阱）。
-        await git(['restore', '--source', source, '--worktree', '--', ...requestedPaths], workspace)
-        sendJson(response, 200, { isRepo: true, restored: requestedPaths, source })
+        //
+        // 但**基线里不存在的文件不能用 restore**：那正是"本轮新建的文件"，它在基线里
+        // 没有对应内容，restore 会直接报错（实测返回 500）。对这类文件，正确的还原是
+        // **删除它**——那才是"回到基线状态"。逐个判断，两类分开处理。
+        const restored = []
+        const deleted = []
+        for (const path of requestedPaths) {
+          // `cat-file -e <rev>:<path>` 在路径不存在时以非零退出。
+          let existsInSource = true
+          try {
+            await git(['cat-file', '-e', `${source}:${path}`], workspace)
+          } catch {
+            existsInSource = false
+          }
+          if (existsInSource) {
+            await git(['restore', '--source', source, '--worktree', '--', path], workspace)
+            restored.push(path)
+          } else {
+            // 工作区里若确实存在就删掉；不存在则视为已经还原。
+            const absolute = resolve(workspace, path)
+            if (existsSync(absolute)) rmSync(absolute, { force: true })
+            deleted.push(path)
+          }
+        }
+        sendJson(response, 200, { isRepo: true, restored, deleted, source })
         return
       }
 

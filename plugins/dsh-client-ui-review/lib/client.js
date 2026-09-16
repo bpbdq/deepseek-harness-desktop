@@ -624,6 +624,37 @@ window.__ModuleLoader__.load({
     function ReviewPanel(props) {
       const { t, workspace, sessionId, scope, candidates, onPick, anchor } = props
       const open = usePanelOpen()
+      const rootRef = react.useRef(null)
+
+      /**
+       * 点击外部或按 Escape 关闭抽屉。
+       *
+       * 与分支菜单同一套做法：用 `mousedown`（而不是 click）在**捕获阶段**判定，
+       * 这样拖选文本之类的操作不会误判；关闭条件写进 `open` 的依赖里，关闭后立刻摘掉
+       * 监听，不给文档留常驻监听。
+       *
+       * 触发按钮本身不算"外部"：它有自己的开关逻辑，若把它的点击也当成外部点击，
+       * 会出现"点一下先关再开"的一闪。
+       */
+      react.useEffect(() => {
+        if (!open) return undefined
+        const onPointerDown = (event) => {
+          const node = rootRef.current
+          if (node !== null && node.contains(event.target)) return
+          const trigger = document.querySelector('[data-review-trigger="1"]')
+          if (trigger !== null && trigger.contains(event.target)) return
+          panelStore.set(false)
+        }
+        const onKeyDown = (event) => {
+          if (event.key === 'Escape') panelStore.set(false)
+        }
+        document.addEventListener('mousedown', onPointerDown, true)
+        document.addEventListener('keydown', onKeyDown)
+        return () => {
+          document.removeEventListener('mousedown', onPointerDown, true)
+          document.removeEventListener('keydown', onKeyDown)
+        }
+      }, [open])
 
       // 两种语义分别取数据：本轮改动需要会话，工作区改动不需要。
       const turn = useChanges(scope === 'workspace' ? undefined : workspace, sessionId)
@@ -641,6 +672,7 @@ window.__ModuleLoader__.load({
       return react.createElement(
         'aside',
         {
+          ref: rootRef,
           style: {
             // 右侧全高抽屉，而不是浮在入口下方的小面板。
             //
@@ -943,6 +975,9 @@ window.__ModuleLoader__.load({
         'div',
         {
           ref,
+          // 标记这个按钮是"审查抽屉的入口"，供抽屉的外部点击判定排除它——
+          // 否则点按钮会先被当成外部点击关闭、再被按钮自己的开关打开，出现一闪。
+          'data-review-trigger': '1',
           // 自绘的固定定位：覆盖层槽位不提供布局，位置由我们自己定。
           //
           // 纵向位置在窗口顶边下方约 44px：顶边那一带是窗口的最小化/最大化/关闭按钮

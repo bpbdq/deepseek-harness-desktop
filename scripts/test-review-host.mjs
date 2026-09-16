@@ -205,6 +205,30 @@ try {
   check('7b) 未登记工作区取历史 -> 400', res.status, 400)
   rmSync(otherRepo, { recursive: true, force: true })
 
+  // ---- 8. 未跟踪的新文件必须出现在"工作区改动"里 ---------------------------
+  //
+  // 需求反馈："项目级 git 记录里 AI 新增的文件没显示"。未跟踪文件在 git status 里是
+  // `??`，若 diff 只比 HEAD 与树、而树里没有它，就会漏掉——所以这条必须固化。
+  console.log('')
+  console.log('--- 未跟踪的新文件 ---')
+  writeFileSync(join(repo, 'created-by-agent.txt'), 'agent made this\n')
+  res = await call('/dsh-desktop/review/workspace', { workspace, sessionId: session })
+  json = await res.json()
+  const untracked = new Map((json.files ?? []).map((f) => [f.path, f]))
+  check('8) 未跟踪的新文件出现在列表里', untracked.has('created-by-agent.txt'), 'true')
+  check('   状态为新增（A）', (untracked.get('created-by-agent.txt')?.status ?? '').startsWith('A'), 'true')
+  check('   差异里有它的内容', (json.diff ?? '').includes('agent made this'), 'true')
+
+  // 还原也应能作用于未跟踪文件（把新建的文件撤回）。
+  res = await call('/dsh-desktop/review/revert', {
+    workspace,
+    sessionId: session,
+    scope: 'workspace',
+    paths: ['created-by-agent.txt'],
+  })
+  check('   可还原未跟踪的新文件 -> 200', res.status, 200)
+  check('   还原后该文件从列表消失', (await (await call('/dsh-desktop/review/workspace', { workspace, sessionId: session })).json()).files.some((f) => f.path === 'created-by-agent.txt'), 'false')
+
   // ---- 4. 未登记的工作区 ---------------------------------------------------
   const other = mkdtempSync(join(tmpdir(), 'dsh-review-other-'))
   res = await call('/dsh-desktop/review/changes', { workspace: other, sessionId: session })
