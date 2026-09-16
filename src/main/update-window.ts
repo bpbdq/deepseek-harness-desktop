@@ -233,12 +233,7 @@ export function openUpdateWindow(
         shellNote.textContent = '';
       }
 
-      const wrap = document.getElementById('progress-wrap');
-      if (payload.shellProgress === undefined) { wrap.hidden = true; return; }
-      wrap.hidden = false;
-      document.getElementById('progress-bar').style.width = payload.shellProgress + '%';
-      document.getElementById('progress-text').textContent =
-        strings.shellProgress.replace('{percent}', String(payload.shellProgress));    });`
+    });`
 
   const css = `
   .track { margin-top: 16px; padding-top: 12px; border-top: 1px solid #2a2a30; }
@@ -275,8 +270,22 @@ export function openUpdateWindow(
     onAction,
   )
 
+  // 检查可能在页面订阅 IPC 前完成；保留最新状态，加载（或重新加载）后再补发。
+  let loaded = false
+  let latestState: UpdatePanelState | undefined
+  panel.window.webContents.on('did-start-loading', () => {
+    loaded = false
+  })
+  panel.window.webContents.on('did-finish-load', () => {
+    loaded = true
+    if (latestState !== undefined) panel.push('state', latestState)
+  })
+
   return {
     window: panel.window,
-    update: (state: UpdatePanelState): void => panel.push('state', state),
+    update: (state: UpdatePanelState): void => {
+      latestState = state
+      if (loaded) panel.push('state', state)
+    },
   }
 }
