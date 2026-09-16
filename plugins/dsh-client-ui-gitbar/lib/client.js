@@ -299,6 +299,37 @@ window.__ModuleLoader__.load({
       //
       // 依赖数组里带 open：只在打开期间挂监听，关闭时立刻摘掉，不给文档留常驻监听。
       const containerRef = react.useRef(null)
+
+      /**
+       * 下拉菜单的位置：由容器（徽章）的实时位置算出来。
+       *
+       * 为什么需要：菜单用 `fixed` 定位是为了跳出输入框容器的裁剪（否则小窗口下只
+       * 露出顶部一条），但 `fixed` 不再跟随徽章——若把偏移写成常量，菜单就会钉在
+       * 屏幕角落，与徽章脱节（实测就飘到了左下角）。因此这里测量徽章位置，把菜单
+       * 贴在它正上方、左对齐。
+       */
+      const [anchor, setAnchor] = react.useState(undefined)
+      react.useEffect(() => {
+        if (!open) {
+          setAnchor(undefined)
+          return undefined
+        }
+        const measure = () => {
+          const node = containerRef.current
+          if (node === null) return
+          const rect = node.getBoundingClientRect()
+          setAnchor({ left: rect.left, bottom: window.innerHeight - rect.top + 6 })
+        }
+        measure()
+        // 窗口尺寸变化或滚动都会让徽章移动，菜单要跟着走。
+        window.addEventListener('resize', measure)
+        window.addEventListener('scroll', measure, true)
+        return () => {
+          window.removeEventListener('resize', measure)
+          window.removeEventListener('scroll', measure, true)
+        }
+      }, [open])
+
       react.useEffect(() => {
         if (!open) return undefined
 
@@ -380,19 +411,23 @@ window.__ModuleLoader__.load({
                 style: {
                   // fixed 而不是 absolute：absolute 相对工具栏里那个小容器定位，会被
                   // 输入框卡片的可视区域裁掉（小窗口里只能看到顶部一条）。fixed 相对
-                  // 视口定位，跳出祖先裁剪；高度也用 viewport 约束，避免在大分支列表时
-                  // 溢出屏幕。
+                  // 视口定位，跳出祖先裁剪。
+                  //
+                  // 但 fixed 不再跟随徽章，所以位置必须**测量出来**（见 anchor），
+                  // 否则菜单会钉在屏幕角落、与徽章脱节——实测就飘到了左下角。
+                  // anchor 未就绪时先用合理兜底，避免闪到屏幕外。
                   position: 'fixed',
-                  bottom: 'clamp(72px, 12vh, 140px)',
-                  left: 'clamp(12px, 3vw, 40px)',
+                  bottom: anchor === undefined ? 'clamp(72px, 12vh, 140px)' : `${anchor.bottom}px`,
+                  left: anchor === undefined ? 'clamp(12px, 3vw, 40px)' : `${anchor.left}px`,
                   zIndex: 9999,
                   minWidth: '220px',
                   maxWidth: 'min(420px, calc(100vw - 24px))',
                   maxHeight: 'min(300px, calc(100vh - 200px))',
                   overflowY: 'auto',
                   borderRadius: '8px',
-                  border: '1px solid #3d3d45',
-                  background: '#232329',
+                  border: '1px solid var(--dsw-alias-border-l2, #3d3d45)',
+                  background: 'var(--dsw-alias-bg-overlay, #232329)',
+                  color: 'var(--dsw-alias-label-primary)',
                   boxShadow: '0 8px 24px rgba(0,0,0,.45)',
                   padding: '4px',
                 },

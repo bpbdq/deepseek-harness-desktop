@@ -485,7 +485,7 @@ window.__ModuleLoader__.load({
      * @param props - `{ t, workspace, sessionId, scope, candidates, onPick }`。
      */
     function ReviewPanel(props) {
-      const { t, workspace, sessionId, scope, candidates, onPick } = props
+      const { t, workspace, sessionId, scope, candidates, onPick, anchor } = props
       const open = usePanelOpen()
 
       // 两种语义分别取数据：本轮改动需要会话，工作区改动不需要。
@@ -505,17 +505,20 @@ window.__ModuleLoader__.load({
         'aside',
         {
           style: {
+            // fixed 跳出祖先裁剪；位置由调用方测量入口按钮后传入（anchor），
+            // 使面板贴在入口下方，而不是钉在屏幕角落与入口脱节。
             position: 'fixed',
-            top: 'clamp(12px, 6vh, 60px)',
-            right: 'clamp(8px, 2vw, 24px)',
-            bottom: 'clamp(12px, 6vh, 60px)',
+            top: anchor === undefined ? 'clamp(12px, 6vh, 60px)' : `${anchor.bottom + 6}px`,
+            right: anchor === undefined ? 'clamp(8px, 2vw, 24px)' : `${anchor.rightInset}px`,
+            maxHeight: 'min(560px, calc(100vh - 140px))',
             zIndex: 9998,
             width: 'min(520px, calc(100vw - 32px))',
             display: 'flex',
             flexDirection: 'column',
             borderRadius: '10px',
             border: '1px solid var(--dsw-alias-border-l2, #3d3d45)',
-            background: 'var(--dsw-alias-bg-base)',
+            background: 'var(--dsw-alias-bg-overlay, #1f1f24)',
+            color: 'var(--dsw-alias-label-primary)',
             boxShadow: '0 16px 48px rgba(0,0,0,.45)',
             overflow: 'hidden',
           },
@@ -690,12 +693,54 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * 测量入口按钮的位置，供面板贴着它显示。
+     *
+     * 面板用 `fixed` 定位是为了跳出祖先裁剪（此前被输入框容器裁成一条），但 `fixed`
+     * 不跟随入口——偏移写成常量就会钉在角落。因此打开时测量一次，并在窗口尺寸变化或
+     * 滚动时重测。
+     * @param open - 面板是否展开。
+     * @returns `{ ref, anchor }`，`anchor` 为 `{ bottom, rightInset }`（视口坐标）。
+     */
+    function useAnchor(open) {
+      const ref = react.useRef(null)
+      const [anchor, setAnchor] = react.useState(undefined)
+
+      react.useEffect(() => {
+        if (!open) {
+          setAnchor(undefined)
+          return undefined
+        }
+        const measure = () => {
+          const node = ref.current
+          if (node === null) return
+          const rect = node.getBoundingClientRect()
+          setAnchor({
+            // 面板放在按钮下方。
+            bottom: rect.bottom,
+            // 用"距右边缘的距离"而不是 left：面板是右对齐的，这样窗口变窄时也不会溢出。
+            rightInset: Math.max(8, window.innerWidth - rect.right),
+          })
+        }
+        measure()
+        window.addEventListener('resize', measure)
+        window.addEventListener('scroll', measure, true)
+        return () => {
+          window.removeEventListener('resize', measure)
+          window.removeEventListener('scroll', measure, true)
+        }
+      }, [open])
+
+      return { ref, anchor }
+    }
+
+    /**
      * 项目页（尚未进入会话）的常驻面板入口。
      * @param props - 槽注入的属性。
      */
     function HeroChangesTrigger(props) {
       const t = typeof props?.t === 'function' ? props.t : (key) => key
       const open = usePanelOpen()
+      const { ref, anchor } = useAnchor(open)
 
       // 工作区候选：优先问宿主要（最可靠），注入的钩子只作为补充。
       const [roots, setRoots] = react.useState([])
@@ -757,6 +802,7 @@ window.__ModuleLoader__.load({
       return react.createElement(
         'div',
         {
+          ref,
           // 自绘的固定定位：覆盖层槽位不提供布局，位置由我们自己定。
           // 放在右上角，避开左栏与输入框，不参与任何槽位的排版。
           style: {
@@ -812,6 +858,7 @@ window.__ModuleLoader__.load({
           scope: 'workspace',
           candidates,
           onPick: setPicked,
+          anchor,
         }),
       )
     }
