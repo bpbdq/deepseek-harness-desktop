@@ -505,21 +505,24 @@ window.__ModuleLoader__.load({
         'aside',
         {
           style: {
-            // fixed 跳出祖先裁剪；位置由调用方测量入口按钮后传入（anchor），
-            // 使面板贴在入口下方，而不是钉在屏幕角落与入口脱节。
+            // 右侧全高抽屉，而不是浮在入口下方的小面板。
+            //
+            // 这样与 IDE 的提交面板一致：内容区更高（提交记录能一屏看更多），且因为
+            // 贴着窗口右边、占满高度，不会与窗口控件或页面头部图标抢位置——浮动面板
+            // 会挡住它们（实际反馈）。
             position: 'fixed',
-            top: anchor === undefined ? 'clamp(12px, 6vh, 60px)' : `${anchor.bottom + 6}px`,
-            right: anchor === undefined ? 'clamp(8px, 2vw, 24px)' : `${anchor.rightInset}px`,
-            maxHeight: 'min(560px, calc(100vh - 140px))',
+            top: 0,
+            right: 0,
+            bottom: 0,
+            height: '100vh',
             zIndex: 9998,
-            width: 'min(520px, calc(100vw - 32px))',
+            width: 'min(560px, calc(100vw - 120px))',
             display: 'flex',
             flexDirection: 'column',
-            borderRadius: '10px',
-            border: '1px solid var(--dsw-alias-border-l2, #3d3d45)',
+            borderLeft: '1px solid var(--dsw-alias-border-l2, #3d3d45)',
             background: 'var(--dsw-alias-bg-overlay, #1f1f24)',
             color: 'var(--dsw-alias-label-primary)',
-            boxShadow: '0 16px 48px rgba(0,0,0,.45)',
+            boxShadow: '-8px 0 32px rgba(0,0,0,.35)',
             overflow: 'hidden',
           },
         },
@@ -804,10 +807,13 @@ window.__ModuleLoader__.load({
         {
           ref,
           // 自绘的固定定位：覆盖层槽位不提供布局，位置由我们自己定。
-          // 放在右上角，避开左栏与输入框，不参与任何槽位的排版。
+          //
+          // 纵向位置在窗口顶边下方约 44px：顶边那一带是窗口的最小化/最大化/关闭按钮
+          // （Windows 的 caption 区域），紧贴顶边会挡住它们，也会压住对话页头部的
+          // 功能图标（实际反馈）。
           style: {
             position: 'fixed',
-            top: '10px',
+            top: '44px',
             right: '14px',
             zIndex: 9997,
             display: 'inline-flex',

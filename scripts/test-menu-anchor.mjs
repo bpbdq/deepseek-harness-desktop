@@ -94,6 +94,56 @@ async function verify(label, finder, menuSelector, side) {
   check('面板不越出视口（上）', data.menu.top >= 0, String(data.menu.top))
   check('面板不越出视口（下）', data.menu.bottom <= data.viewport.h, `${data.menu.bottom} <= ${data.viewport.h}`)
 
+  if (label === '分支菜单') {
+    // 分支项的可读性：当前分支此前是浅蓝字叠中蓝底、又因按钮 disabled 而整体半透明，
+    // 结果几乎看不清（实际反馈）。这里用对比度量化，不再靠"看起来还行"。
+    const contrast = JSON.parse(
+      await evaluate(`
+        (() => {
+          const items = [...document.querySelectorAll('button')].filter((el) => (el.getAttribute('title') || '').match(/^(本地分支|远程分支|Local branch|Remote branch)$/));
+          const parse = (value) => {
+            const m = (value || '').match(/rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)(?:,\\s*([\\d.]+))?\\)/);
+            return m ? { r: +m[1], g: +m[2], b: +m[3], a: m[4] === undefined ? 1 : +m[4] } : null;
+          };
+          const luminance = (c) => {
+            const f = (v) => { const s = v / 255; return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4) };
+            return 0.2126 * f(c.r) + 0.7152 * f(c.g) + 0.0722 * f(c.b);
+          };
+          // 面板底色：取菜单容器的背景，用于把半透明前景合成上去。
+          const menu = ${menuSelector};
+          const menuBg = menu ? (parse(getComputedStyle(menu).backgroundColor) || { r: 35, g: 35, b: 41, a: 1 }) : { r: 35, g: 35, b: 41, a: 1 };
+          const over = (fg, bg) => ({
+            r: fg.r * fg.a + bg.r * (1 - fg.a),
+            g: fg.g * fg.a + bg.g * (1 - fg.a),
+            b: fg.b * fg.a + bg.b * (1 - fg.a),
+          });
+          const out = items.slice(0, 6).map((el) => {
+            const s = getComputedStyle(el);
+            const fg = parse(s.color);
+            const elBg = parse(s.backgroundColor);
+            const opacity = Number(s.opacity);
+            const behind = elBg && elBg.a > 0 ? over(elBg, menuBg) : menuBg;
+            // 元素自身的 opacity 会同时作用于文字与底色——合成时按它缩一次。
+            const fgEff = fg ? { ...fg, a: (fg.a ?? 1) * opacity } : null;
+            const bgEff = elBg ? { ...over(elBg, menuBg), a: 1 } : menuBg;
+            const text = fgEff ? over(fgEff, bgEff) : null;
+            const l1 = text ? luminance(text) : 0;
+            const l2 = luminance(bgEff);
+            const ratio = (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
+            return { name: (el.innerText || '').trim().slice(0, 24), opacity, ratio: Math.round(ratio * 100) / 100 };
+          });
+          return JSON.stringify(out);
+        })()
+      `),
+    )
+    console.log(`  分支项对比度: ${JSON.stringify(contrast)}`)
+    // WCAG AA 对大号文字要求 3:1；分支名是 12px 等宽，按 4.5:1 要求更稳妥，
+    // 这里取 3.5 作为下限——足以避免"看不清"，又不至于因主题差异误报。
+    const worst = contrast.reduce((min, item) => Math.min(min, item.ratio), Number.POSITIVE_INFINITY)
+    check('分支项对比度足够（≥3.5）', worst >= 3.5, `最差 ${worst}`)
+    check('分支项没有被整体半透明', contrast.every((item) => item.opacity === 1), JSON.stringify(contrast.map((i) => i.opacity)))
+  }
+
   await evaluate(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })), true`)
   await wait(400)
 }
@@ -106,13 +156,51 @@ await verify(
   'above',
 )
 
-// 项目改动面板：在入口下方展开。
-await verify(
-  '项目改动面板',
-  `[...document.querySelectorAll('button')].find((el) => /项目改动|选择要查看的项目/.test(el.getAttribute('title') || ''))`,
-  `document.querySelector('aside[style*=fixed]')`,
-  'below',
+// 项目改动面板：右侧全高抽屉（IDE 风格），而不是贴着入口的小浮层。
+// 因此这里断言的是"贴住右边、占满高度"，而不是"在入口下方"——抽屉本来就覆盖整个
+// 纵向范围，那个断言对抽屉没有意义。
+console.log('')
+console.log('=== 项目改动抽屉 ===')
+await evaluate(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })), true`)
+// 面板开关是**持久化**的（localStorage），且它在插件模块加载时就被读进内存——
+// 只删键不会改变运行中的状态。因此这里删键后**重载页面**，让状态真正归零，
+// 否则"点一下"会把它从展开切成收起，测试随即误报为打不开。
+await evaluate(`localStorage.removeItem('dsh.review.panelOpen'), location.reload(), true`)
+await wait(9000)
+const drawerClicked = await evaluate(
+  `(() => { const el = ${`[...document.querySelectorAll('button')].find((el2) => /项目改动|选择要查看的项目/.test(el2.getAttribute('title') || ''))`}; if (!el) return 'not-found'; el.click(); return 'clicked' })()`,
 )
+if (drawerClicked === 'not-found') {
+  console.log('  SKIP  入口不存在')
+} else {
+  await wait(1500)
+  const drawer = JSON.parse(
+    await evaluate(`
+      (() => {
+        const p = document.querySelector('aside[style*=fixed]');
+        if (!p) return '{"found":false}';
+        const r = p.getBoundingClientRect();
+        const s = getComputedStyle(p);
+        return JSON.stringify({
+          found: true,
+          top: Math.round(r.top), bottom: Math.round(r.bottom),
+          left: Math.round(r.left), right: Math.round(r.right),
+          height: Math.round(r.height),
+          vw: window.innerWidth, vh: window.innerHeight,
+          position: s.position,
+        });
+      })()
+    `),
+  )
+  console.log(`  抽屉: ${JSON.stringify(drawer)}`)
+  check('抽屉已展开', drawer.found === true)
+  check('贴住窗口右边', Math.abs(drawer.right - drawer.vw) <= 1, `${drawer.right} vs ${drawer.vw}`)
+  check('占满纵向（上边到底）', drawer.top === 0, String(drawer.top))
+  check('占满纵向（下边到底）', Math.abs(drawer.bottom - drawer.vh) <= 1, `${drawer.bottom} vs ${drawer.vh}`)
+  check('宽度合理（不至于占满全屏）', drawer.left > drawer.vw * 0.3, `left=${drawer.left}`)
+  await evaluate(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })), true`)
+  await wait(300)
+}
 
 socket.close()
 console.log('')

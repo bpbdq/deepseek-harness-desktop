@@ -565,15 +565,38 @@ window.__ModuleLoader__.load({
                           padding: '6px 8px',
                           border: 'none',
                           borderRadius: '5px',
-                          background: branch.current ? '#2d4a7c' : 'transparent',
-                          color: branch.current ? '#cfe0ff' : '#d8d8de',
+                          // 当前分支用不透明的实底 + 高对比文字。
+                          //
+                          // 此前是 `#2d4a7c` 配 `#cfe0ff`（浅蓝叠中蓝），而按钮又是
+                          // `disabled`——禁用会让整项**半透明**，两者叠加导致当前分支
+                          // 几乎看不清（实际反馈的问题）。这里改用主题色的实底，
+                          // 并显式把 disabled 的透明度重置为 1。
+                          background: branch.current
+                            ? 'var(--dsw-alias-state-business-primary, #2d4a7c)'
+                            : 'transparent',
+                          color: branch.current
+                            ? 'var(--dsw-alias-label-primary-inverted, #ffffff)'
+                            : 'var(--dsw-alias-label-primary)',
+                          opacity: 1,
+                          fontWeight: branch.current ? 600 : 400,
                           font: '12px ui-monospace, Consolas, monospace',
                           cursor: busy || branch.current ? 'default' : 'pointer',
                         },
                       },
                       // 远程分支加一个标记，否则 `origin/x` 与本地 `x` 在列表里难以区分。
+                      // 不透明度从 0.55 提到 0.8：0.55 在深色底上几乎看不见（实际反馈）。
                       branch.isRemote
-                        ? react.createElement('span', { style: { opacity: 0.55, fontSize: '10px' } }, 'R')
+                        ? react.createElement(
+                            'span',
+                            {
+                              style: {
+                                opacity: 0.8,
+                                fontSize: '10px',
+                                color: 'var(--dsw-alias-label-secondary)',
+                              },
+                            },
+                            'R',
+                          )
                         : null,
                       react.createElement('span', null, branch.name),
                     ),
