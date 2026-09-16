@@ -378,12 +378,17 @@ window.__ModuleLoader__.load({
               'div',
               {
                 style: {
-                  position: 'absolute',
-                  bottom: '34px',
-                  left: 0,
-                  zIndex: 50,
+                  // fixed 而不是 absolute：absolute 相对工具栏里那个小容器定位，会被
+                  // 输入框卡片的可视区域裁掉（小窗口里只能看到顶部一条）。fixed 相对
+                  // 视口定位，跳出祖先裁剪；高度也用 viewport 约束，避免在大分支列表时
+                  // 溢出屏幕。
+                  position: 'fixed',
+                  bottom: 'clamp(72px, 12vh, 140px)',
+                  left: 'clamp(12px, 3vw, 40px)',
+                  zIndex: 9999,
                   minWidth: '220px',
-                  maxHeight: '300px',
+                  maxWidth: 'min(420px, calc(100vw - 24px))',
+                  maxHeight: 'min(300px, calc(100vh - 200px))',
                   overflowY: 'auto',
                   borderRadius: '8px',
                   border: '1px solid #3d3d45',

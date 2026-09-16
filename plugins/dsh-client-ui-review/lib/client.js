@@ -181,12 +181,20 @@ window.__ModuleLoader__.load({
         'div',
         {
           style: {
-            position: 'absolute',
-            bottom: '34px',
-            right: 0,
-            zIndex: 60,
-            width: 'min(760px, 90vw)',
-            maxHeight: 'min(560px, 70vh)',
+            // 用 fixed 而不是 absolute。
+            //
+            // absolute 是相对工具栏里那个小容器定位的，而工具栏位于输入框卡片内部——
+            // 面板会被它的可视区域裁掉，在小窗口里尤其明显（截图里只露出顶部一条）。
+            // fixed 相对视口定位，彻底跳出祖先的裁剪；配合下面的 viewport 尺寸约束，
+            // 面板在任何窗口大小下都完整可见。
+            //
+            // 位置刻意避开输入框所在的下半区，让面板浮在对话区之上。
+            position: 'fixed',
+            top: 'clamp(12px, 8vh, 72px)',
+            right: 'clamp(12px, 3vw, 40px)',
+            zIndex: 9999,
+            width: 'min(760px, calc(100vw - 24px))',
+            maxHeight: 'min(560px, calc(100vh - 140px))',
             display: 'flex',
             flexDirection: 'column',
             borderRadius: '10px',
