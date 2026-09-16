@@ -25,6 +25,7 @@
     "dist:all": "npm run build && npm run stage && electron-builder --win --linux --x64",
     "release": "npm run dist:win && electron-builder --publish always",
     "test:i18n": "node scripts/test-i18n.cjs",
+    "test:update-window": "npm run build && node scripts/test-update-window.cjs",
     "probe:web": "node scripts/probe-web.mjs",
     "postinstall": "node scripts/link-runtime.mjs"
   },
