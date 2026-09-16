@@ -291,7 +291,11 @@ async function main(): Promise<void> {
     server.on('log', forwardServerLog)
 
     try {
-      // 同一个 window：窗口与渲染进程无需重建，重新导航即可。
+      // 关键的顺序：先把"上一个项目"的客户端状态清掉，再导航。
+      //
+      // dsh 把当前选中的会话与工作区视图存在 localStorage 里。切换项目后它们指向旧项目
+      // 的会话，新服务端不认识，界面就卡在「自动重连中」——服务端其实已经就绪（实测）。
+      await mainWindow.clearProjectState()
       await navigate(await server.start())
     } catch (error) {
       dialog.showErrorBox(

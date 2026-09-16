@@ -121,6 +121,8 @@ export interface MainWindowOptions {
 export function createMainWindow(options: MainWindowOptions): {
   window: BrowserWindow
   navigate: (ready: ServerReady) => Promise<void>
+  /** 清掉与上一个项目绑定的渲染进程状态（切换项目前调用）。 */
+  clearProjectState: () => Promise<void>
   /** 更新加载页的提示文案（例如解包进度）。 */
   setSplashHint: (hint: string) => void
   close: () => void
@@ -216,6 +218,26 @@ export function createMainWindow(options: MainWindowOptions): {
       // 标记已导航：此后不再允许重写加载页，否则会把真实界面刷掉。
       navigated = true
       show()
+    },
+    /**
+     * 清掉渲染进程里与"上一个项目"绑定的持久化状态。
+     *
+     * 为什么必须清：dsh 把"当前选中的会话"和"工作区视图"存在 localStorage 里
+     * （`dsh.sessions.current`、`dsh.workspace.view.v*`）。切换项目后这些指向的是
+     * 旧项目里的会话，新服务端不认识它，于是界面卡在「自动重连中」——服务端其实
+     * 已经就绪，只是客户端一直在重试一个不存在的会话（实测踩到过）。
+     *
+     * 清掉它们是安全的：会话数据在服务端，这里丢的只是"选中的是哪一个"。
+     */
+    clearProjectState: async (): Promise<void> => {
+      if (window.isDestroyed()) return
+      try {
+        await window.webContents.executeJavaScript(
+          `(() => { const keys = Object.keys(localStorage).filter((k) => k.startsWith('dsh.')); for (const k of keys) localStorage.removeItem(k); return keys.length })()`,
+        )
+      } catch {
+        // 页面尚未加载时执行会抛错——此时本来也没有需要清理的状态。
+      }
     },
     close: (): void => {
       if (!window.isDestroyed()) window.destroy()

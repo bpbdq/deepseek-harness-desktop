@@ -28,10 +28,15 @@ window.__ModuleLoader__.load({
 
     /** 概览入口所在的槽位。
      *
-     * 必须是 **list** 类型的槽位：single 槽只能有一个注册，占用它会顶掉官方自己的注册，
-     * 甚至让整个界面加载失败（实际踩过——把入口挂到 conversation.composer.bar 后，
-     * 官方的 conversation 包注册失败，界面显示 "Failed to load plugins"）。
-     * 下方工具栏与分支徽章同排，是 list 槽且已验证可用。
+     * 留在下方工具栏（`conversation.input.right`，list 槽）。
+     *
+     * 试过把它放到输入框**上方**那一排（`conversation.composer.bar`），两次都失败，
+     * 而且第二次更严重——那个槽位就是**输入框本体**：
+     *   1. 不带优先级直接注册 -> 该槽是 single 类型，官方注册失败，界面显示
+     *      "Failed to load plugins"，整个会话界面加载不出来；
+     *   2. 带显式负优先级遮蔽 -> 官方注册被顶掉，**输入框消失**（实测 DOM 里
+     *      contenteditable 与 textarea 都不存在）。
+     * 结论：那一排不提供扩展点，第三方无法在不破坏输入框的前提下插入控件。
      */
     const CHIP_SLOT = 'conversation.input.right'
 
