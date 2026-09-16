@@ -163,22 +163,26 @@ async function main(): Promise<void> {
   // 首次启动要把它解到用户目录，实测 9.2 秒。若把解包放在建窗口之前，用户会先对着
   // 空屏幕等这段时间；现在窗口立刻可见，并在加载页上显示解包进度。
   const iconPath = resolveIconPath(app.isPackaged)
-  const gitInfo = await readGitInfo(workspace)
-  const gitBadge = formatGitBadge(gitInfo, '*')
   const mainWindow = createMainWindow({
     userDataDir,
     ...(iconPath !== undefined ? { iconPath } : {}),
-    ...(gitBadge !== undefined ? { gitBadge } : {}),
     splashTitle: strings.splashTitle,
     splashHint: strings.splashHint,
   })
   const window = mainWindow.window
   // 单独取出导航方法：`window` 是 BrowserWindow，本身没有 navigate。
   const navigate = mainWindow.navigate
+  const initialWorkspace = workspace
+  void readGitInfo(initialWorkspace).then((info) => {
+    if (workspace === initialWorkspace) mainWindow.setGitBadge(formatGitBadge(info, '*'))
+  })
 
   // 解包内置运行时（已解过则瞬间返回）。
   let unpackedDir: string | undefined
-  if (app.isPackaged) {
+  // Updated runtimes have their own Node. Prepare the bundled fallback only when
+  // it is actually selected (rollback removes current and relaunches this path).
+  const hasUpdatedRuntime = existsSync(join(userDataDir, 'runtime', 'current', 'node_modules', '@deepseek-ai', 'dsh', 'package.json'))
+  if (app.isPackaged && !hasUpdatedRuntime) {
     const archivePath = join(process.resourcesPath, 'runtime.br')
     if (existsSync(archivePath)) {
       try {
@@ -187,12 +191,13 @@ async function main(): Promise<void> {
           // 钳制到 0-100：即使将来某一侧传参的量纲又不一致，也只是进度条不精确，
           // 不会再显示出 "444%" 这种明显错误的数字（真发生过）。
           const percent = Math.min(100, Math.max(0, Math.floor((readBytes / Math.max(archiveBytes, 1)) * 100)))
-          // 只在百分比变化时重写加载页，避免每个数据块都触发一次页面重载。
+          // 只在百分比变化时更新加载页文字。
           if (percent === lastPercent) return
           lastPercent = percent
           mainWindow.setSplashHint(format(strings.splashUnpacking, { percent: String(percent) }))
         })
         unpackedDir = join(result.dir, 'runtime')
+        mainWindow.setSplashHint(strings.splashHint)
       } catch (error) {
         dialog.showErrorBox(
           strings.startupFailedTitle,

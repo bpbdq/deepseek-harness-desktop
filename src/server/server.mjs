@@ -32,6 +32,9 @@ import {
 } from '@deepseek-ai/dsh-app-boot'
 import { provideCmdline } from '@deepseek-ai/dsh-cmdline'
 import { DSH_LAUNCH_ENVIRONMENT_KEY } from '@deepseek-ai/dsh-launch-environment'
+import { installClientModuleCache } from './client-module-cache.mjs'
+
+installClientModuleCache()
 
 const BIN_NAME = 'dsh-desktop'
 const PROFILE_NAME = 'desktop'

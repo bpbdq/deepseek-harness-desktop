@@ -63,16 +63,19 @@ function resolveServerEntry(runtime: RuntimeLocation): string {
   if (resolve(runtime.serverEntry) === resolve(target)) return target
 
   try {
-    const source = readFileSync(runtime.serverEntry)
-    let current: Buffer | undefined
-    try {
-      current = readFileSync(target)
-    } catch {
-      current = undefined
-    }
-    if (current === undefined || !current.equals(source)) {
-      mkdirSync(runtime.dir, { recursive: true })
-      writeFileSync(target, source)
+    for (const name of ['client-module-cache.mjs', path.basename(runtime.serverEntry)]) {
+      const source = readFileSync(path.join(path.dirname(runtime.serverEntry), name))
+      const destination = name === path.basename(runtime.serverEntry) ? target : path.join(runtime.dir, name)
+      let current: Buffer | undefined
+      try {
+        current = readFileSync(destination)
+      } catch {
+        current = undefined
+      }
+      if (current === undefined || !current.equals(source)) {
+        mkdirSync(runtime.dir, { recursive: true })
+        writeFileSync(destination, source)
+      }
     }
     return target
   } catch {

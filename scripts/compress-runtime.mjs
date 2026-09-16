@@ -17,18 +17,24 @@
 import {
   createReadStream,
   createWriteStream,
+  mkdirSync,
   readdirSync,
+  readFileSync,
   rmSync,
   statSync,
   writeFileSync,
 } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { createBrotliCompress, constants } from 'node:zlib'
 import { pipeline } from 'node:stream/promises'
-import { join, relative, resolve } from 'node:path'
+import { dirname, join, relative, resolve } from 'node:path'
 
 const ROOT = resolve(import.meta.dirname, '..')
-const SOURCE = join(ROOT, 'runtime')
-const OUTPUT = join(ROOT, 'build', 'runtime.br')
+const option = (name) => process.argv.find((arg) => arg.startsWith(`--${name}=`))?.slice(name.length + 3)
+const SOURCE = resolve(option('source') ?? join(ROOT, 'runtime'))
+const OUTPUT = resolve(option('output') ?? join(ROOT, 'build', 'runtime.br'))
+const QUALITY = Number(option('quality') ?? 11)
+if (!Number.isInteger(QUALITY) || QUALITY < 0 || QUALITY > 11) throw new Error('quality must be an integer from 0 to 11')
 const MAGIC = 'DSHRT1\n'
 
 /** 运行期用不到的文件名/扩展名。 */
@@ -74,7 +80,7 @@ const DROP_DIR = [
 function collect() {
   const files = []
   const walk = (current) => {
-    for (const entry of readdirSync(current, { withFileTypes: true })) {
+    for (const entry of readdirSync(current, { withFileTypes: true }).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)) {
       const path = join(current, entry.name)
       if (entry.isDirectory()) {
         if (DROP_DIR.some((fragment) => path.endsWith(fragment))) continue
@@ -84,10 +90,24 @@ function collect() {
       if (!entry.isFile()) continue
       if (DROP_FILE.some((pattern) => pattern.test(entry.name))) continue
       const stats = statSync(path)
+      const archivePath = relative(SOURCE, path).split('\\').join('/')
+      // The shell refreshes these beside node_modules when launching. Including
+      // development copies would invalidate the runtime on shell-only updates.
+      if (archivePath === 'server.mjs' || archivePath === 'client-module-cache.mjs') continue
+      // Staging timestamps do not change the runtime. Keep archive identity stable
+      // when rebuilding only the Electron shell, without changing staged files.
+      let content
+      if (archivePath === 'runtime.json' || archivePath === 'node/node-runtime.json') {
+        const metadata = JSON.parse(readFileSync(path, 'utf8'))
+        delete metadata.stagedAt
+        delete metadata.downloadedAt
+        content = Buffer.from(JSON.stringify(metadata, null, 2) + '\n')
+      }
       files.push({
-        path: relative(SOURCE, path).split('\\').join('/'),
+        path: archivePath,
         absolute: path,
-        size: stats.size,
+        size: content?.length ?? stats.size,
+        content,
         // 解包到 Linux/macOS 时要还原可执行位，否则 node/node.exe 之类无法运行。
         mode: stats.mode & 0o111 ? 0o755 : 0o644,
       })
@@ -115,7 +135,8 @@ async function* archive() {
     yield length
     yield header
     // 逐块读文件内容，避免大文件占满内存。
-    for await (const chunk of createReadStream(file.absolute)) yield chunk
+    if (file.content !== undefined) yield file.content
+    else for await (const chunk of createReadStream(file.absolute)) yield chunk
   }
   // 结束哨兵：头长度为 0。
   const end = Buffer.alloc(4)
@@ -123,13 +144,21 @@ async function* archive() {
   yield end
 }
 
+mkdirSync(dirname(OUTPUT), { recursive: true })
 rmSync(OUTPUT, { force: true })
 const started = Date.now()
+const contentHash = createHash('sha256')
+async function* hashedArchive() {
+  for await (const chunk of archive()) {
+    contentHash.update(chunk)
+    yield chunk
+  }
+}
 await pipeline(
-  archive(),
+  hashedArchive(),
   createBrotliCompress({
     params: {
-      [constants.BROTLI_PARAM_QUALITY]: 11,
+      [constants.BROTLI_PARAM_QUALITY]: QUALITY,
       [constants.BROTLI_PARAM_LGWIN]: 24,
       [constants.BROTLI_PARAM_SIZE_HINT]: keptBytes,
     },
@@ -140,7 +169,7 @@ await pipeline(
 const outSize = statSync(OUTPUT).size
 /** 记录包内清单与统计，供外壳诊断显示。 */
 writeFileSync(
-  join(ROOT, 'build', 'runtime.json'),
+  join(dirname(OUTPUT), 'runtime.json'),
   JSON.stringify(
     {
       format: 'dsh-runtime-archive',
@@ -148,7 +177,8 @@ writeFileSync(
       files: files.length,
       rawBytes: keptBytes,
       archiveBytes: outSize,
-      codec: 'brotli-q11',
+      contentHash: contentHash.digest('hex'),
+      codec: `brotli-q${QUALITY}`,
       builtAt: new Date().toISOString(),
     },
     null,

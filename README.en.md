@@ -123,9 +123,17 @@ Grab the file for your platform from [Releases](../../releases).
 
 Filenames carry no version number; the version lives in the Release tag.
 
-On **first launch** the app unpacks the bundled runtime (about 197 MB / 10 000 files, ~10
-seconds) and the splash page shows progress. That is what keeps both the installer and the
-installed footprint far smaller (see [Architecture](#architecture)). Later launches skip it.
+On **first launch** the app unpacks the bundled runtime (about 197 MB / 10 000 files).
+Bounded asynchronous writes keep the splash responsive; progress updates do not reload it.
+New archives use a content fingerprint, so installer timestamp changes alone do not trigger
+another extraction. An active updated runtime skips preparing the bundled fallback until needed.
+Older archives retain their original cache compatibility.
+
+The shell caches immutable client scripts and source maps in memory for an explicitly verified
+runtime implementation. Installed package files remain untouched; an upstream source change
+automatically falls back to the official implementation. Run `npm run test:startup` for regression
+checks, or `npm run benchmark:startup -- --archive=<runtime.br> --baseline=<pre-change-commit>`
+to compare extraction and server readiness (excluding Electron and browser rendering).
 
 macOS builds are **unsigned**, so Gatekeeper quarantines them. Open once via
 **right-click → Open**, or clear the flag:
