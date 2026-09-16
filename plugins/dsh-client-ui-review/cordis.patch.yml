@@ -1,0 +1,10 @@
+# review bundle 的挂载层。
+#
+# 与 gitbar 同一结构：新增行必须包在 `- insert:` 之下。写成顶层会被当作"按 id 覆盖既有
+# 行"，而该 id 不存在，于是既不报错也不生效（这个坑在 gitbar 上踩过）。
+- insert:
+    # 一个条目同时提供两半：
+    #   host   —— lib/index.js 提供快照与差异路由
+    #   client —— lib/client.js 在输入框工具栏加"审查"入口并在面板里展示差异
+    - id: ui-review
+      name: dsh-client-ui-review
