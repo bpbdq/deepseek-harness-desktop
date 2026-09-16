@@ -40,8 +40,21 @@ window.__ModuleLoader__.load({
      */
     const CHIP_SLOT = 'conversation.input.right'
 
-    /** 项目页（尚未进入会话时）可用的槽位：工作区选择器那一行。 */
-    const HERO_SLOT = 'conversation.hero.workspace'
+    /** 项目级入口所在的槽位。
+     *
+     * 用 `shell.overlay`——**全局覆盖层，list 槽**，在项目页与会话内都会渲染，而且
+     * 由我自己决定位置（fixed），不依赖任何槽位的布局。
+     *
+     * 为什么不挂在别处（都是实测踩过的）：
+     *   * `conversation.hero.workspace`（项目页工作区选择器那一行）是 **single** 槽，
+     *     官方自己也在注册它；官方在前，我的被静默顶掉，入口从未出现。
+     *   * `sidebar.footer.action` 虽然渲染了，但注册后内容为空——项目页那个状态下
+     *     数据钩子拿不到，组件直接返回空。
+     *   * `conversation.composer.bar` 就是**输入框本体**，遮蔽它会顶掉输入框。
+     *
+     * 结论：要"无论有没有会话都能点开"，只有全局覆盖层可靠。
+     */
+    const HERO_SLOT = 'shell.overlay'
 
     /** 常驻面板开关的持久化键（按应用而非按会话记忆）。 */
     const PANEL_KEY = 'dsh.review.panelOpen'
@@ -77,6 +90,7 @@ window.__ModuleLoader__.load({
       notRepo: '当前工作区不是 git 仓库。',
       clean: '本轮没有改动任何文件。',
       projectTitle: '项目改动',
+      projectPick: '选择要查看的项目',
       projectIdle: '项目暂无改动',
       workspaceClean: '这个项目当前没有未提交的改动。',
       workspaceEmpty: '这个仓库还没有任何提交。',
@@ -108,6 +122,7 @@ window.__ModuleLoader__.load({
       notRepo: 'The current workspace is not a git repository.',
       clean: 'This turn did not change any file.',
       projectTitle: 'Project changes',
+      projectPick: 'Choose a project to inspect',
       projectIdle: 'No project changes',
       workspaceClean: 'This project has no uncommitted changes.',
       workspaceEmpty: 'This repository has no commits yet.',
@@ -339,12 +354,20 @@ window.__ModuleLoader__.load({
       const [state, setState] = react.useState({ phase: 'loading' })
 
       const reload = react.useCallback(async () => {
-        if (workspace === undefined) return
+        if (workspace === undefined) {
+          // 没有工作区就明确说出来。此前这里直接返回，界面停在"正在读取差异…"，
+          // 看起来像卡住，而实际原因是"不知道该看哪个项目"。
+          setState({ phase: 'error', message: 'noWorkspace' })
+          return
+        }
         try {
           const result = await call('workspace', { workspace })
           setState({ phase: 'ready', result })
         } catch (cause) {
-          setState({ phase: 'error', message: String(cause.message ?? cause) })
+          const error = cause instanceof Error ? cause : new Error(String(cause))
+          // 把失败原因带上：这类错误此前只让界面停在"加载中"，看不出是权限、路径还是
+          // 网络问题（实际排查中就因此多绕了几圈）。
+          setState({ phase: 'error', message: error.detail ?? error.message })
         }
       }, [workspace])
 
@@ -366,12 +389,16 @@ window.__ModuleLoader__.load({
       const [state, setState] = react.useState({ phase: 'loading' })
 
       const reload = react.useCallback(async () => {
-        if (workspace === undefined) return
+        if (workspace === undefined) {
+          setState({ phase: 'error', message: 'noWorkspace' })
+          return
+        }
         try {
           const result = await call('history', { workspace, limit: 20 })
           setState({ phase: 'ready', result })
         } catch (cause) {
-          setState({ phase: 'error', message: String(cause.message ?? cause) })
+          const error = cause instanceof Error ? cause : new Error(String(cause))
+          setState({ phase: 'error', message: error.detail ?? error.message })
         }
       }, [workspace])
 
@@ -395,7 +422,12 @@ window.__ModuleLoader__.load({
         return react.createElement('div', { style: { color: 'var(--dsw-alias-label-tertiary)', fontSize: '12px' } }, t('loading'))
       }
       if (phase === 'error') {
-        return react.createElement('div', { style: { color: '#f0c8c8', fontSize: '12px' } }, message)
+        // `noWorkspace` 是内部代号，翻成给用户看的话。
+        return react.createElement(
+          'div',
+          { style: { color: '#f0c8c8', fontSize: '12px' } },
+          message === 'noWorkspace' ? t('projectPick') : message,
+        )
       }
       if (result?.isRepo === false) {
         return react.createElement('div', { style: { color: 'var(--dsw-alias-label-tertiary)', fontSize: '12px' } }, t('notRepo'))
@@ -608,7 +640,7 @@ window.__ModuleLoader__.load({
      * @returns 工作区路径；无法确定时 undefined。
      */
     function resolveProjectWorkspace(props) {
-      // 会话存储：通常由渲染器自动注入 useSessions。
+      // 会话存储：`inject` 里声明了 sessions，钩子会随之注入。
       if (typeof props?.useSessions === 'function') {
         const recent = props.useSessions((state) => {
           const list = state?.ids ?? []
@@ -621,7 +653,7 @@ window.__ModuleLoader__.load({
         if (recent !== undefined) return recent
       }
 
-      // 工作区列表：形状是 `{ items: [...] }`。
+      // 工作区列表：形状是 `{ items: [...] }`。`inject` 里声明了 workspaces。
       if (typeof props?.useWorkspaces === 'function') {
         const first = props.useWorkspaces((state) => {
           const items = state?.items
@@ -635,6 +667,7 @@ window.__ModuleLoader__.load({
         if (first !== undefined) return first
       }
 
+      // 最后退回宿主注入的外壳工作区（由 server.mjs 写入 env，插件在 host 侧读取）。
       return asPath(props?.workspace)
     }
 
@@ -663,8 +696,34 @@ window.__ModuleLoader__.load({
     function HeroChangesTrigger(props) {
       const t = typeof props?.t === 'function' ? props.t : (key) => key
       const open = usePanelOpen()
-      const candidates = useWorkspaceList(props)
+
+      // 工作区候选：优先问宿主要（最可靠），注入的钩子只作为补充。
+      const [roots, setRoots] = react.useState([])
+      react.useEffect(() => {
+        let alive = true
+        void (async () => {
+          try {
+            const result = await call('roots', {})
+            if (alive) setRoots(Array.isArray(result?.roots) ? result.roots : [])
+          } catch {
+            if (alive) setRoots([])
+          }
+        })()
+        return () => {
+          alive = false
+        }
+      }, [])
+
+      const fromHooks = useWorkspaceList(props)
+      const candidates = roots.length > 0 ? roots : fromHooks
       const inferred = resolveProjectWorkspace(props)
+
+      // 诊断快照：这块面板的状态分布在"宿主给的名单 / 注入的钩子 / 推断"三处，
+      // 出问题时从界面上只能看到"没确定工作区"，无法判断是哪一环空了。挂到 window 上
+      // 后，脚本可以一眼看清每一环的实际值。
+      if (typeof window !== 'undefined') {
+        window.__dshDesktopReviewPanel = { roots, fromHooks, inferred }
+      }
 
       // 用户手动选定的工作区优先；否则用推断出的那个。两者都没有就取第一个候选。
       const [picked, setPicked] = react.useState(undefined)
@@ -690,32 +749,45 @@ window.__ModuleLoader__.load({
         }
       }, [workspace])
 
-      if (workspace === undefined) return null
+      // 拿不到工作区时**也要渲染按钮**：面板自己能列出候选让用户选。
+      // 此前这里直接 return null，结果在"还没有任何会话与登记工作区"的状态下入口彻底
+      // 消失，用户看到的是"这个功能不存在"。
       const hasChanges = typeof count === 'number' && count > 0
 
       return react.createElement(
         'div',
-        { style: { display: 'inline-flex' } },
+        {
+          // 自绘的固定定位：覆盖层槽位不提供布局，位置由我们自己定。
+          // 放在右上角，避开左栏与输入框，不参与任何槽位的排版。
+          style: {
+            position: 'fixed',
+            top: '10px',
+            right: '14px',
+            zIndex: 9997,
+            display: 'inline-flex',
+          },
+        },
         react.createElement(
           'button',
           {
             type: 'button',
-            title: t('projectTitle'),
+            title: workspace === undefined ? t('projectPick') : t('projectTitle'),
             onClick: () => panelStore.set(!open),
             style: {
               display: 'inline-flex',
               alignItems: 'center',
               gap: '6px',
               padding: '0 10px',
-              height: '28px',
+              height: '26px',
               borderRadius: '6px',
               border: '1px solid var(--dsw-alias-border-l2, #3d3d45)',
-              background: hasChanges || open ? '#2d4a7c' : 'var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-layer-2, #2a2a31))',
+              background: hasChanges || open ? '#2d4a7c' : 'var(--dsw-alias-bg-layer-2, #2a2a31)',
               color: hasChanges || open ? '#cfe0ff' : 'var(--dsw-alias-label-secondary)',
               fontSize: '12px',
               fontFamily: 'ui-monospace, Consolas, monospace',
               whiteSpace: 'nowrap',
               cursor: 'pointer',
+              opacity: 0.92,
             },
           },
           react.createElement(
@@ -728,7 +800,11 @@ window.__ModuleLoader__.load({
               strokeLinecap: 'round',
             }),
           ),
-          react.createElement('span', null, count === null ? t('projectIdle') : t('files', { count })),
+          react.createElement(
+            'span',
+            null,
+            workspace === undefined ? t('projectTitle') : count === null ? t('projectIdle') : t('files', { count }),
+          ),
         ),
         react.createElement(ReviewPanel, {
           t,
@@ -782,7 +858,9 @@ window.__ModuleLoader__.load({
         return react.createElement('div', { style: { color: 'var(--dsw-alias-label-tertiary)', fontSize: '12px', padding: '10px 2px' } }, t('loading'))
       }
       if (phase === 'error') {
-        return react.createElement('div', { style: { color: '#f0c8c8', fontSize: '12px', padding: '10px 2px' } }, message)
+        // `noWorkspace` 是一个内部代号，翻成给用户看的话。
+        const text = message === 'noWorkspace' ? t('projectPick') : message
+        return react.createElement('div', { style: { color: '#f0c8c8', fontSize: '12px', padding: '10px 2px' } }, text)
       }
       if (result?.isRepo === false) {
         return react.createElement('div', { style: { color: 'var(--dsw-alias-label-tertiary)', fontSize: '12px', padding: '10px 2px' } }, t('notRepo'))
@@ -1131,7 +1209,13 @@ window.__ModuleLoader__.load({
                 id: 'review-project-changes',
                 order: 30,
                 locale: NS,
-                inject: () => ({ t: ctx.locale.bind(NS) }),
+                // 声明数据服务，让渲染器把 `useSessions` / `useWorkspaces` 注入进来——
+                // 项目页没有会话，必须靠它们推断"当前项目是哪一个"。
+                inject: () => ({
+                  t: ctx.locale.bind(NS),
+                  useSessions: ctx.sessions?.useSessions ?? ctx.sessions?.use,
+                  useWorkspaces: ctx.workspaces?.useWorkspaces ?? ctx.workspaces?.use,
+                }),
               },
               HeroChangesTrigger,
             ),
@@ -1195,7 +1279,7 @@ window.__ModuleLoader__.load({
     exports.apply = apply
     // 四个必需服务：slots 与 locale 是插件机制要求（缺 slots 会导致整个界面白屏）；
     // sidebarRight 用于打开标签，sidebarRightTabs 用于把标签类型注册进它的类型表。
-    exports.inject = ['slots', 'locale', 'sidebarRight', 'sidebarRightTabs']
+    exports.inject = ['slots', 'locale', 'sidebarRight', 'sidebarRightTabs', 'sessions', 'workspaces']
     return module.exports
   },
 })

@@ -144,35 +144,20 @@ function indexFor(sessionId) {
 }
 
 /**
- * 给"当前工作区"建一棵树，复用**常驻索引**以利用 git 的 stat 缓存。
+ * 进行中的"当前工作区"快照。按会话标识去重。
  *
- * 这是本模块性能的关键。每次轮询都从零构建索引（read-tree + add -A）会让 git 对所有
- * 未变文件重新计算哈希；实测在一个 6640 条变化路径的仓库上每次约 0.8 秒，而客户端每
- * 4 秒轮询一次，代价不必要地高。
- *
- * 换成常驻索引后：索引里保留了上次的 stat 数据，`git add -A` 只会重新哈希**真正变化**
- * 的文件，其余按 mtime 直接跳过。首次调用（索引不存在）退化为全量构建，之后每次都快。
- *
- * @param workspace - 工作区路径。
- * @param sessionId - 会话标识。
- * @returns 当前工作区的树对象 SHA。
+ * 为什么需要：同一个会话的索引文件只有一个，而多个请求会同时到达——例如面板打开时
+ * 触发器的轮询与面板自身的数据加载会并发打同一个路由。两个 git 进程同时写同一个索引
+ * 会撞出 `Unable to create '...index.lock': File exists`（实测踩到，界面上直接显示这行
+ * git 报错）。把并发的相同快照合并成一次，既避免冲突也省掉重复计算。
  */
-async function currentTree(workspace, sessionId) {
-  const indexPath = indexFor(`${sessionId}-current`)
-  const env = { GIT_INDEX_FILE: indexPath }
-  // 索引首次使用（或损坏）时从 HEAD 起一个基准，让后续的 add -A 有比较对象。
-  if (!existsSync(indexPath)) {
-    await git(['read-tree', 'HEAD'], workspace, env).catch(() => undefined)
-  }
-  await git(['add', '-A'], workspace, env)
-  return (await git(['write-tree'], workspace, env)).trim()
-}
+const inFlightSnapshots = new Map()
 
 /**
- * 给工作区拍一张完整快照（遍历整棵树），返回树对象 SHA。
+ * 从零给工作区拍一张完整快照（遍历整棵树），返回树对象 SHA。
  *
- * **只在记录基线时调用一次**：它要遍历整个工作区，代价与未跟踪文件数量成正比。
- * 实测在带 6635 个未跟踪文件的仓库上约 92 秒，因此绝不能放进轮询路径。
+ * **只在记录基线时调用**：它要为所有变动文件重新计算哈希，代价与它们数量成正比。
+ * 实测在带 6640 个变动路径的仓库上约 4 秒（首次索引为空时更慢），因此不能放进轮询路径。
  *
  * 全程只读：git 只写我们自己指定的临时 index，不动仓库状态。
  * @param workspace - 已校验的工作区路径。
@@ -193,6 +178,43 @@ async function snapshot(workspace, sessionId) {
     rmSync(indexPath, { force: true })
     throw error
   }
+}
+
+/**
+ * 取"当前工作区"的树对象 SHA：复用**常驻索引**（性能）+ 合并并发调用（安全）。
+ *
+ * 性能这一层是本模块的关键：每次轮询都从零构建索引会让 git 对所有未变文件重新计算哈希；
+ * 复用常驻索引后，索引里保留的 stat 数据让 git 直接跳过未变文件（实测 4 秒降到 0.5 秒）。
+ * 代价是索引文件被多个请求共享，因此必须配上面那层去重。
+ *
+ * @param workspace - 工作区路径。
+ * @param sessionId - 会话标识。
+ * @returns 树对象 SHA。
+ */
+async function currentTree(workspace, sessionId) {
+  const key = `${sessionId}|${workspace}`
+  const running = inFlightSnapshots.get(key)
+  if (running !== undefined) return running
+
+  const task = (async () => {
+    const indexPath = indexFor(`${sessionId}-current`)
+    const env = { GIT_INDEX_FILE: indexPath }
+    // 索引首次使用（或损坏）时从 HEAD 起一个基准，让后续的 add -A 有比较对象。
+    //
+    // 绝不能在每次调用时都 read-tree：那会重置索引、连带丢掉 stat 缓存，add -A 于是
+    // 每次都退化成全量重新哈希（实测 4.3 秒而不是 0.22 秒）。这个代价不明显，因为结果
+    // 依然正确——只是慢，所以很容易一直留着。
+    if (!existsSync(indexPath)) {
+      await git(['read-tree', 'HEAD'], workspace, env).catch(() => undefined)
+    }
+    await git(['add', '-A'], workspace, env)
+    return (await git(['write-tree'], workspace, env)).trim()
+  })().finally(() => {
+    inFlightSnapshots.delete(key)
+  })
+
+  inFlightSnapshots.set(key, task)
+  return task
 }
 
 /**
@@ -296,6 +318,24 @@ function createReviewHandler() {
           sendJson(response, 400, { error: 'invalid body', detail: String(error.message) })
           return
         }
+      }
+
+      // ---- 可查看的工作区列表 -----------------------------------------------
+      //
+      // 必须放在工作区校验**之前**：它回答的正是"有哪些工作区可以看"，因此不能要求
+      // 请求先带一个合法工作区——那是一个先有鸡还是先有蛋的问题。此前把它放在校验之后，
+      // 于是永远返回 400，面板一直显示"选择要查看的项目"（实测踩到过）。
+      if (url.pathname === `${ROUTE_PREFIX}/roots`) {
+        const roots = []
+        for (const root of collectAllowedRoots()) {
+          try {
+            roots.push(realpathSync.native(root))
+          } catch {
+            // 已登记但如今不存在的目录：跳过，不列给用户。
+          }
+        }
+        sendJson(response, 200, { roots })
+        return
       }
 
       const workspace = validateWorkspace(payload.workspace ?? url.searchParams.get('workspace'))
@@ -511,6 +551,7 @@ export function apply(ctx) {
     `${ROUTE_PREFIX}/workspace`,
     `${ROUTE_PREFIX}/revert`,
     `${ROUTE_PREFIX}/history`,
+    `${ROUTE_PREFIX}/roots`,
   ]) {
     ctx.effect(() => ctx.webServer.register({ kind: 'exact', path, handler }), `review: ${path}`)
   }

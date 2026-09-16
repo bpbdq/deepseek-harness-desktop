@@ -7,7 +7,10 @@
 const keyword = process.argv[2] ?? '更新'
 const expression = process.argv[3] ?? '1'
 
-const list = await (await fetch('http://127.0.0.1:9222/json/list')).json()
+// 端口可用 DSH_CDP_PORT 覆盖：默认 9222 常被上一个未退出的实例占着，
+// 此时 Electron 会报 "Cannot start http server for devtools" 而我们却连到了旧实例。
+const port = process.env.DSH_CDP_PORT ?? '9222'
+const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()
 const page = list.find((t) => t.type === 'page' && String(t.title).includes(keyword))
 if (page === undefined) {
   console.error(`找不到标题包含 "${keyword}" 的页面`)
