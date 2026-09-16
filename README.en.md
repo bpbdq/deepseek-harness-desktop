@@ -56,17 +56,76 @@ Added by the shell:
 
 ---
 
+## How this differs from the official distribution
+
+The following capabilities are **not part of the official npm distribution**; they come from
+this project's desktop shell. The table exists so you know what changed, not to suggest the
+official package is lacking anything.
+
+### Environment and installation
+
+| Capability | Official (npm) | This project |
+|---|---|---|
+| Requires a preinstalled Node.js | yes | **no** |
+| Requires npm | yes | **no** (bundled npm is used for updates) |
+| Installation | `npm install -g` | installer with a graphical wizard |
+| Installer UI language | — | **Simplified Chinese** (Windows NSIS) |
+| Uninstall | manual `npm uninstall` | normal entry in Apps & features |
+
+### Desktop integration
+
+| Capability | Official (npm) | This project |
+|---|---|---|
+| Window | a browser tab | native window with a menu bar |
+| **Git branch in the title bar** | no | current branch, dirty marker, ahead/behind |
+| **Tray residency** | no | keeps running after the window closes; restore, restart the server, check for updates |
+| Native folder picker | no | "Open Folder" uses the system dialog |
+| Menu bar | no | File / Edit / View / Update / Help |
+| Single instance | no (each `dsh web` takes a port) | a second launch focuses the existing window |
+
+### Project-level operations (not in the official distribution)
+
+| Capability | What it does |
+|---|---|
+| **Open Folder / switch project** | pick a new workspace with the native dialog; the app restarts into it. Recent list (up to 8, dead entries pruned automatically) |
+| **Reveal workspace in file manager** | no need to copy paths by hand |
+| **Copy workspace path** | straight to the clipboard, ready to paste into a terminal |
+| **Project info panel** | workspace path, git branch and change count, runtime version and source, bundled Node and Electron versions, harness home |
+| **Per-turn change review** | after a turn finishes, see every file that turn changed, with unified diffs |
+| **Branch badge and switching** | current branch in the composer toolbar; click to switch to a local or remote branch |
+
+### Updates
+
+| Capability | Official (npm) | This project |
+|---|---|---|
+| Update the agent runtime | `npm update -g` | in-app Updates window, one click, then restart |
+| Follow a release channel | choose a dist-tag yourself | `latest` / `next` / `alpha` |
+| **Update the app shell itself** | n/a | built-in auto-update (`electron-updater`) |
+| Failed update | diagnose yourself | if the new runtime fails to boot, the app rolls back to the bundled one and restarts |
+
+Everything shell-owned (menus, tray, dialogs, plugin strings) follows the **system language**
+and ships in Chinese and English.
+
+---
+
 ## Download
 
 Grab the file for your platform from [Releases](../../releases).
 
 | Platform | File |
 |---|---|
-| Windows | `DeepSeek Harness-<version>-x64.exe` (NSIS installer) |
-| Windows | `DeepSeek Harness-<version>-x64.msi` (managed deployment) |
-| Linux | `DeepSeek Harness-<version>-x64.AppImage`, `.deb`, `.rpm` |
-| macOS | `DeepSeek Harness-<version>-x64.dmg` (Intel) |
-| macOS | `DeepSeek Harness-<version>-arm64.dmg` (Apple silicon) |
+| Windows | `dsh-desktop-x64.exe` — NSIS installer, **Chinese UI** |
+| Windows | `dsh-desktop-x64.msi` — managed deployment / group policy |
+| Linux | `dsh-desktop-x86_64.AppImage` — no install, `chmod +x` and run |
+| Linux | `dsh-desktop-amd64.deb` |
+| macOS | `dsh-desktop-x64.dmg` (Intel) |
+| macOS | `dsh-desktop-arm64.dmg` (Apple silicon) |
+
+Filenames carry no version number; the version lives in the Release tag.
+
+On **first launch** the app unpacks the bundled runtime (about 197 MB / 10 000 files, ~10
+seconds) and the splash page shows progress. That is what keeps both the installer and the
+installed footprint far smaller (see [Architecture](#architecture)). Later launches skip it.
 
 macOS builds are **unsigned**, so Gatekeeper quarantines them. Open once via
 **right-click → Open**, or clear the flag:

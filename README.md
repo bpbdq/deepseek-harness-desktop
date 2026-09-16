@@ -4,64 +4,116 @@
 
 把 **DeepSeek Harness（`dsh`）** 做成一个装完即用的桌面应用。
 
-终端用户**不需要安装 Node.js，也不需要 npm**：装好打开就能用完整功能。官方 Web UI 被原样复用，所以 `dsh web` 有的一切都在——工具、沙箱、会话、后台任务、子代理、工作流、技能、MCP——桌面外壳另外补上它才能提供的东西：真正的窗口、关窗后仍在跑任务的托盘、系统密钥链存凭据、以及自动更新。
+终端用户**不需要安装 Node.js，也不需要 npm**：装好打开就能用完整功能。官方 Web UI 被原样复用，因此 `dsh web` 提供的一切——工具、沙箱、会话、后台任务、子代理、工作流、技能、MCP——都在这里。桌面外壳在此之上补齐只有原生应用才能提供的能力：真正的窗口与菜单、关闭后仍在运行的托盘、系统密钥链存储凭据、跳过补丁号以外的自动更新，以及若干官方发行形态未包含的项目级操作。
 
 [![release](https://img.shields.io/badge/release-GitHub%20Releases-blue)](../../releases)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)](#下载安装)
 
 ---
 
 ## 目录
 
-- [为什么是这个设计](#为什么是这个设计)
-- [功能](#功能)
+- [这是什么](#这是什么)
+- [与官方发行形态的差异](#与官方发行形态的差异)
 - [下载安装](#下载安装)
 - [界面与用法](#界面与用法)
 - [架构](#架构)
 - [更新机制](#更新机制)
 - [凭据存储](#凭据存储)
-- [从源码构建](#从源码构建)
-- [打包](#打包)
-- [版本管理](#版本管理)
+- [二次开发](#二次开发)
+- [打包与发布](#打包与发布)
 - [项目结构](#项目结构)
 - [已知限制](#已知限制)
 - [故障排查](#故障排查)
+- [许可证](#许可证)
 
 ---
 
-## 为什么是这个设计
+## 这是什么
 
-三条来自官方 `@deepseek-ai/dsh` 包的事实决定了整个架构。这些是查证结果，不是偏好：
+`dsh` 官方以 npm 包的形式发行，使用方式是：
 
-| 事实 | 出处 | 结论 |
+```bash
+npm install -g @deepseek-ai/dsh
+dsh web          # 然后在浏览器里打开它打印的地址
+```
+
+这对开发者很自然，但对"只想用这个工具"的人有三道门槛：先要有 Node 环境、要会用 npm、还要自己记住启动命令并管理一个常驻的浏览器标签页。
+
+本项目把这三道门槛一次性去掉。它做两件事：
+
+1. **内置整个运行时。** 官方 `dsh`、它完整的依赖树、以及一个固定版本的便携 Node，全部随安装包携带。用户的机器上可以完全没有 Node 与 npm。
+2. **提供原生外壳。** 用 Electron 承载官方 Web UI，补上窗口、菜单、托盘、原生目录选择器、系统密钥链、自动更新等桌面应用应有的部分。
+
+**不修改、不 fork `dsh` 本身。** 外壳通过 `dsh` 的公开 API 启动它，并对它做的一切保持透明——因此 `dsh` 的升级可以原样接纳，不存在合并补丁的负担。
+
+> `dsh` 把 profile 名 `desktop` 预留给了 Electron 应用（`dsh/lib/bin.js` 明确拒绝 `dsh --profile desktop`），因此本项目正是该 profile 的预期拥有者，而不是"占用"了它。
+
+### 主要优点
+
+| 优点 | 具体表现 |
+|---|---|
+| **零环境依赖** | 内置 Node 24 与完整 `dsh` 运行时，用户无需安装或配置任何东西 |
+| **官方 UI 原样复用** | 不是重做的界面，就是官方 Web UI 本身，功能与观感一致 |
+| **不做 fork** | 通过公开 API 使用 `dsh`，升级无合并负担，行为可预期 |
+| **双轨更新** | 智能体运行时与外壳各自独立更新，互不牵连 |
+| **凭据进系统密钥链** | 不落明文，与命令行 `dsh` 的安装完全隔离、可共存 |
+| **一次安装，三平台可用** | Windows（NSIS / MSI）、macOS（dmg）、Linux（AppImage / deb / rpm） |
+
+---
+
+## 与官方发行形态的差异
+
+以下能力**不在官方 npm 发行形态内**，由本项目的桌面外壳提供。列入此表是为了让你清楚"换了什么"，而不是声称官方有何欠缺。
+
+### 环境与安装
+
+| 能力 | 官方（npm） | 本项目 |
 |---|---|---|
-| `desktop` 这个 profile 名**是留给 Electron 应用的** | `dsh/README.md:20`；`dsh/lib/bin.js:29` 明确拒绝该名字 | 我们就是官方预设的 `desktop` profile 拥有者。**不修改、不 fork `dsh`。** |
-| `loadProfileDirectory()` 的存在意义是 *"application-owned profiles whose package project and lifecycle belong to that application"* | `@deepseek-ai/dsh-app-boot` | 应用通过公开 API 启动插件树，**从不调用 `dsh` 命令行**。 |
-| `dsh web` 支持 `--no-open` 与 `--port 0` | `@deepseek-ai/dsh-web-app/lib/startup.js` | 外壳自己掌管窗口，并让操作系统分配空闲端口。 |
+| 需要预装 Node.js | 需要 | **不需要** |
+| 需要 npm | 需要 | **不需要**（更新用内置的那份 npm） |
+| 安装方式 | `npm install -g` | 安装包，图形化安装向导 |
+| 安装界面语言 | — | **简体中文**（Windows NSIS） |
+| 卸载 | 手动 `npm uninstall` | 系统「应用和功能」中正常卸载 |
 
-另外运行时需要 **Node 22.13+/24**（`zlib.createZstdCompress`、`util.getSystemErrorMessage`、`module.stripTypeScriptTypes`），比 Electron 33 自带的 Node 20 新。因此应用内置一份固定版本的便携 Node，而不是借用 Electron 的。见[架构](#架构)。
+### 桌面集成
 
----
+| 能力 | 官方（npm） | 本项目 |
+|---|---|---|
+| 独立窗口 | 浏览器标签页 | 原生窗口，带菜单栏与标题栏 |
+| **窗口标题显示 Git 分支** | 无 | 显示当前分支、未提交标记、领先/落后 |
+| **托盘常驻** | 无 | 关窗后继续运行，托盘可唤回、重启服务端、检查更新 |
+| 原生目录选择器 | 无 | 「打开文件夹」使用系统对话框 |
+| **菜单栏** | 无 | 文件 / 编辑 / 视图 / 更新 / 帮助 |
+| 全屏、缩放 | 浏览器负责 | 原生菜单项，带快捷键 |
+| 单实例 | 无（多个 `dsh web` 会占多个端口） | 第二次启动聚焦已有窗口 |
 
-## 功能
+### 项目级操作（官方发行形态未包含）
 
-**完整继承官方能力**（因为复用的就是官方 Web UI 本身）：
+这些是日常使用中"总得切出去做一下"的事，被收进了外壳：
 
-- 全部工具：文件读写、搜索、PowerShell / Bash、Web 搜索抓取、子代理、工作流、Ralph 循环、目标、技能、MCP
-- 文件系统沙箱与权限模式
-- 会话持久化与恢复、后台任务、计划任务
-- **右侧栏**：文件树 + 文档预览（Markdown / 代码 / 图片 / PDF / HTML），点文件行号可直接跳转
-- **Open In…**：一键把工作区在编辑器 / 终端 / 文件管理器中打开
-- 中英文界面（跟随系统语言）
+| 能力 | 说明 |
+|---|---|
+| **打开文件夹 / 切换项目** | 原生目录选择器选新工作区，自动重启到该工作区；最近打开列表（最多 8 条，自动过滤已删除的目录） |
+| **在文件管理器中打开工作区** | 不必手抄路径 |
+| **复制工作区路径** | 一键进剪贴板，直接粘到终端 |
+| **项目信息面板** | 工作区路径、Git 分支与改动数、运行时版本与来源、内置 Node 与 Electron 版本、Harness 主目录 |
+| **本轮修改审查** | 一轮任务结束后可查看该轮改动的全部文件与统一差异 |
+| **分支徽章与切换** | 输入框工具栏显示当前分支，点击可切换到本地或远程分支 |
 
-**外壳额外提供**：
+### 更新
 
-- 真正的桌面窗口，几何尺寸记忆
-- **托盘常驻**：关窗后目标、后台任务、子代理继续运行
-- 自动查找并安装新版智能体运行时，失败自动回退
-- 凭据经操作系统密钥链加密（DPAPI / Keychain / libsecret）
-- 单独的 Harness 主目录，与命令行版 `dsh` 完全隔离、可共存
-- 原生目录选择器、原生菜单、单实例、外部链接交给系统浏览器
+| 能力 | 官方（npm） | 本项目 |
+|---|---|---|
+| 更新智能体运行时 | `npm update -g` | 应用内「更新」界面，一键完成并重启 |
+| 跟随发布通道 | 自行指定 dist-tag | 可配置 `latest` / `next` / `alpha` |
+| **更新应用外壳本身** | 不适用 | 内置自动更新（`electron-updater`） |
+| 更新失败处理 | 自行排查 | 新运行时启动失败时自动回退到内置版本并重启 |
+
+### 界面语言
+
+外壳自有的一切（菜单、托盘、对话框、插件文案）**跟随系统语言**，提供中文与英文两套。
 
 ---
 
@@ -71,13 +123,14 @@
 
 | 平台 | 文件 | 说明 |
 |---|---|---|
-| **Windows** | `DeepSeek Harness-<版本>-x64.exe` | NSIS 安装程序，可选安装目录 |
-| **Windows** | `DeepSeek Harness-<版本>-x64.msi` | 适用于企业批量部署 / 组策略 |
-| **Linux** | `DeepSeek Harness-<版本>-x64.AppImage` | 免安装，`chmod +x` 后直接运行 |
-| **Linux** | `DeepSeek Harness-<版本>-x64.deb` | Debian / Ubuntu |
-| **Linux** | `DeepSeek Harness-<版本>-x64.rpm` | Fedora / RHEL / openSUSE |
-| **macOS** | `DeepSeek Harness-<版本>-x64.dmg` | Intel 芯片 |
-| **macOS** | `DeepSeek Harness-<版本>-arm64.dmg` | Apple 芯片（M 系列） |
+| **Windows** | `dsh-desktop-x64.exe` | NSIS 安装程序，可选安装目录，**中文界面** |
+| **Windows** | `dsh-desktop-x64.msi` | 适用于企业批量部署 / 组策略 |
+| **Linux** | `dsh-desktop-x86_64.AppImage` | 免安装，`chmod +x` 后直接运行 |
+| **Linux** | `dsh-desktop-amd64.deb` | Debian / Ubuntu |
+| **macOS** | `dsh-desktop-x64.dmg` | Intel 芯片 |
+| **macOS** | `dsh-desktop-arm64.dmg` | Apple 芯片（M 系列） |
+
+文件名里不带版本号，版本体现在 Release 标签上。
 
 ### macOS 首次打开
 
@@ -88,8 +141,14 @@ macOS 产物**未签名**（发布流程未配置 Apple 开发者证书），Gat
 之后就能正常双击启动了。如果提示「已损坏」，执行一次：
 
 ```bash
-xattr -dr com.apple.quarantine "/Applications/DeepSeek Harness.app"
+xattr -dr com.apple.quarantine "/Applications/dsh-desktop.app"
 ```
+
+### 首次启动
+
+首次启动会**解压内置运行时**（约 197 MB / 10 000 个文件），耗时约 10 秒，启动页会显示进度。这是为了让安装包与安装后占用都小得多（见 [运行时目录布局](#运行时目录布局)）。之后每次启动不再有这一步。
+
+应用会引导你填入 **API Key**。填入后即可开始使用。凭据用操作系统密钥链加密后存在本应用自己的数据目录里，**不会**写进明文的 `.credentials.yaml`。
 
 ### 安装界面语言
 
@@ -99,11 +158,10 @@ xattr -dr com.apple.quarantine "/Applications/DeepSeek Harness.app"
 |---|---|---|
 | Windows `setup.exe` | NSIS 安装向导 | **简体中文** |
 | Windows `.msi` | Windows Installer 向导 | 英文（见下） |
-| Linux `.deb` / `.rpm` / AppImage | 无界面，`dpkg -i` / 直接运行 | 不适用 |
+| Linux `.deb` / AppImage | 无界面，`dpkg -i` / 直接运行 | 不适用 |
 | macOS `.dmg` | 无界面，拖拽到「应用程序」 | 不适用 |
 
-**只有 Windows 的 NSIS 安装程序有可本地化的安装向导**，它已固定为简体中文，由
-`electron-builder.yml` 的两个选项控制：
+**只有 Windows 的 NSIS 安装程序有可本地化的安装向导**，它已固定为简体中文，由 `electron-builder.yml` 的两个选项控制：
 
 ```yaml
 nsis:
@@ -111,32 +169,13 @@ nsis:
   installerLanguages: [zh_CN]  # 语言名，映射到 NSIS 自带的 SimpChinese
 ```
 
-MSI 目前仍是英文：electron-builder 的 MsiTarget 不提供语言选项，其拉取的 WiX
-工具链只含 `WixUIExtension.dll`、不含本地化 `.wxl` 文件。中文 MSI 需要自建 WiX
-UI 扩展，暂未实现。
+MSI 目前仍是英文：electron-builder 的 MsiTarget 不提供语言选项，其拉取的 WiX 工具链只含 `WixUIExtension.dll`、不含本地化 `.wxl` 文件。中文 MSI 需要自建 WiX UI 扩展，暂未实现。
 
-> 这是**安装程序**的语言；安装后的应用界面是另一套机制，跟随系统语言（中英文），
-> 由 `src/main/i18n.ts` 控制。
-
-### 首次启动要做什么
-
-应用会引导你填入 **API Key**。填入后即可开始使用。
-
-凭据用操作系统密钥链加密后存在本应用自己的数据目录里，**不会**写进明文的 `.credentials.yaml`。
+> 这是**安装程序**的语言；安装后的应用界面跟随系统语言（中英文），由 `src/main/i18n.ts` 控制。
 
 ---
 
 ## 界面与用法
-
-### 右侧栏（文件查看与审查）
-
-会话标题栏**右上角**有个展开按钮（左栏收起图标的镜像），点它打开右侧栏。里面可以：
-
-- 浏览当前工作区的**文件树**
-- 点文件直接**预览**：Markdown、代码（带语法高亮）、图片、PDF、HTML
-- 从对话里的文件链接或工具行号引用直接跳进右侧栏对应位置
-
-> 右侧栏是**会话作用域**的：没有会话时按钮和面板都不渲染，这是官方设计。
 
 ### 顶部菜单
 
@@ -145,24 +184,18 @@ UI 扩展，暂未实现。
 | 文件 | **打开文件夹…**（`Ctrl+O`）、**最近打开**、**项目信息…**（`Ctrl+I`）、在文件管理器中打开工作区、复制工作区路径、重新加载、强制重新加载、开发者工具、退出 |
 | 编辑 | 撤销 / 重做 / 剪切 / 复制 / 粘贴 / 全选 |
 | 视图 | 缩放、全屏 |
-| **更新** | **检查智能体运行时更新…**（`Ctrl+Shift+U`）、当前版本号 |
-| 帮助 | 检查智能体运行时更新… |
+| **更新** | **检查更新…**（`Ctrl+Shift+U`） |
+| 帮助 | 检查更新…、打开发布页面、当前版本号 |
+
+菜单栏**刻意不自动隐藏**：它是用户唯一能主动让应用变新的入口。
 
 ### 切换项目（工作区）
 
-**文件 → 打开文件夹…**（`Ctrl+O`）选一个目录，即可把它作为新工作区打开；也可以用
-**文件 → 最近打开** 快速切回之前的项目（最多 8 条，已删除的目录会自动从列表移除，
-重名时用父目录消歧）。
+**文件 → 打开文件夹…**（`Ctrl+O`）选一个目录，即可把它作为新工作区打开；也可以用 **文件 → 最近打开** 快速切回之前的项目。
 
-两个实用入口：
+**切换工作区会重启应用**，这是刻意的取舍：工作区是在服务端启动时传入的，中途更换需要重建整棵插件树（约 11 秒），而重启走的是同一条已验证的启动路径，不存在"半个进程还在用旧工作区"的中间态。会话已持久化，重启后可继续之前的对话。
 
-- **在文件管理器中打开工作区** —— 不想手抄路径时用
-- **复制工作区路径** —— 把这个路径粘到终端里用
-
-**切换工作区会重启应用**，这是刻意的取舍：工作区是在服务端启动时传入的，中途
-更换需要重建整棵插件树（约 11 秒），而重启走的是同一条已验证的启动路径，不存在
-"半个进程还在用旧工作区"的中间态。会话已持久化，重启后可继续之前的对话。
-切换前会明确询问，不会静默刷新界面。
+> 修复过的一个缺陷：`app.relaunch()` 会沿用原来的命令行，导致重启后**旧工作区把新选择盖掉**——表现为"重启了但还是老目录"。现在切换意图通过一个一次性标记文件传递，优先级高于命令行参数。
 
 ### 项目信息与 Git 分支
 
@@ -174,44 +207,55 @@ UI 扩展，暂未实现。
 - 内置 Node 与 Electron 版本
 - Harness 主目录与应用数据目录
 
-当前工作区的分支还会显示在**窗口标题栏**上，例如
-`DeepSeek Harness — master*`，一眼就能看出在哪个分支上工作。
+当前工作区的分支还会显示在**窗口标题栏**上，例如 `DeepSeek Harness — master*`。
 
-> 不是 git 仓库、或机器上没有 git 时，面板显示「不是 git 仓库」而不是报错——
-> 这属于正常状态。探测走的是 `git` 子进程，每条命令都有 5 秒超时，不会拖住界面。
+### 输入框工具栏的两个入口
+
+输入框工具栏右侧（模型选择器左侧）由两个内置插件提供：
+
+**分支徽章**（`dsh-client-ui-gitbar`）
+
+- 显示当前分支、未提交改动数、领先/落后
+- 点击展开分支列表：**本地在前、远程在后**，远程条目带 `R` 标记；切换远程分支时 git 会自动创建同名跟踪分支
+- 若工作区有未提交改动会被覆盖，git 会拒绝切换——此时**保持菜单打开并显示 git 的原始报错**，并给出「暂存改动并切换到 X」按钮（stash 是可恢复的，本插件不会替你丢弃改动）
+- 点击菜单外部或按 `Esc` 关闭
+
+**本轮改动审查**（`dsh-client-ui-review`）
+
+- 显示本轮任务改动的文件数，点击展开面板
+- 列出每个变更文件的状态（新增 / 修改 / 删除 / 重命名）与增删行数
+- 逐文件展开统一差异，带增删行着色
+- 基线的取法是关键：**一轮对话开始时**为工作区拍一张 git 快照，本轮改动相对它计算。因此即使你在本轮开始前就有未提交改动，那些也**不会**被算进本轮
 
 ### 托盘
 
-关闭窗口不会退出应用——窗口隐藏到托盘，**后台任务继续运行**。托盘右键菜单：
+关闭窗口后应用驻留托盘，任务继续运行。托盘菜单提供：
 
-- 打开 DeepSeek Harness
+- 显示主窗口
 - 重启智能体运行时
-- 检查运行时更新…
-- 退出（真正的退出）
+- 检查更新
+- 项目信息
+- 退出
 
 ---
 
 ## 架构
 
 ```
-Electron 主进程                              dsh 服务端子进程
-──────────────────────────                   ─────────────────────────
-单实例锁                                      cwd            = 用户工作区
-窗口 / 托盘 / 菜单 / 深链                     DSH_HOME       = <userData>/home
-凭据解密（系统密钥链）                        profile        = desktop
-运行时更新器                                  bundles        = dsh-base + dsh-web-app
-      │                                             │
-      │  spawn（内置 Node）                          │  loadProfileDirectory()
-      └────────────────────────────────────────────►│  healProfilesModuleFallback()
-                                                    │  boot() + provideCmdline()
-      ◄──── stdout: "dsh web: http://127.0.0.1:PORT/?token=…"
-      ◄──── stdout: "[dsh-desktop] ready"
-      │
-      └─ BrowserWindow 只加载一次带 token 的 URL → 服务端写入签名 Cookie
-         并 302 到干净的 "/" → 此后界面凭 Cookie 认证
+Electron 主进程                                 dsh 服务端子进程
+┌──────────────────────────────┐               ┌─────────────────────────────┐
+│ 窗口 / 菜单 / 托盘            │               │ 官方 @deepseek-ai/dsh        │
+│ 原生目录选择器                │               │ + dsh-base / dsh-web-app     │
+│ 运行时解析与解包              │  spawn        │ + 本项目的两个内置插件        │
+│ 运行时更新（npm）             │ ────────────► │                             │
+│ 外壳更新（electron-updater）  │               │ 监听 127.0.0.1:<随机端口>     │
+│ 凭据（系统密钥链）            │ ◄──────────── │ 打印 dsh web: <url>?token=   │
+└──────────────────────────────┘   stdout      └─────────────────────────────┘
+              │                                              │
+              │  BrowserWindow.loadURL(<带 token 的 url>)    │
+              └──────────────────────────────────────────────┘
+                    官方 Web UI（在 Chromium 中运行）
 ```
-
-**所有执行智能体代码的东西都在子进程里。** 主进程只是外壳，所以智能体崩溃或 OOM 不会带走窗口，窗口隐藏时目标 / 循环 / 后台任务 / 子代理都继续运行。
 
 ### 认证握手
 
@@ -242,7 +286,7 @@ app.asar
 | 散文件（交给 NSIS 的 LZMA 压缩） | 149.2 MB | 278 MB |
 | `runtime.br` 归档 | **124.2 MB** | 42.9 MB（归档）+ 首次解出的 197 MB |
 
-归档方案安装包小 25 MB、且安装目录少占 235 MB，代价是首次启动多约 9 秒（加载页会显示解包进度）。压缩流程见 `scripts/compress-runtime.mjs`：先剔除运行期用不到的文件（`.ts` 源文件、`.map`、`.d.ts`、`.md`、`.pdb` 调试符号、非本平台二进制、Node 自带的 npm），把 314 MB 瘦到 197 MB，再用 brotli q11 压到 42.9 MB。
+归档方案安装包小 25 MB、且安装目录少占 235 MB，代价是首次启动多约 9 秒（加载页显示解包进度）。压缩流程见 `scripts/compress-runtime.mjs`：先剔除运行期用不到的文件（`.ts` 源文件、`.map`、`.d.ts`、`.md`、`.pdb` 调试符号、非本平台二进制、Node 自带的 npm），把 314 MB 瘦到 197 MB，再用 brotli q11 压到 42.9 MB。
 
 > 不携带散文件是刻意的：`runtime.br` 已被 brotli 压满，NSIS 的 LZMA 对它几乎无效（实测再压只省 0.2%），所以两种形态只能二选一——对照实验的结论就是上表。
 
@@ -250,9 +294,16 @@ app.asar
 
 `runtime/` **必须**在 `app.asar` 之外：harness 启动时会创建真实的目录联接（junction）、会 spawn 原生目录选择器等辅助进程、还会按路径加载原生插件——这些在 asar 虚拟文件系统里都不成立。同理，**解压出来的运行时也必须在 asar 之外**，这也是它落在 `<userData>` 的原因之一。
 
-**启动脚本必须从 `<runtime>/server.mjs` 运行**，不能从 `resources/server/` 运行。Node 解析裸模块名是从**脚本自己所在目录**向上找 `node_modules` 的，放在 `resources/server/` 时查找链会走到盘根，直接 `ERR_MODULE_NOT_FOUND`。主进程在 spawn 前把它复制到运行时根目录，这也顺带覆盖了"下载来的新运行时里没有启动脚本"这种情况。
+### 内置插件如何接线
 
-`DSH_HOME` 默认是 `<userData>/home`，与命令行版的 `~/.dsh` **刻意分开**，两者可以共存而不互相污染会话与凭据。
+两个插件（gitbar、review）都是标准 `dsh` 插件，走**官方插件机制**，不是外壳 hack：
+
+- 它们的 `package.json` 声明 `dsh.bundle.patch`（使其可作为 profile bundle 挂载）与 `dsh.client`（使其客户端半边进入模块图）
+- `scripts/stage-runtime.mjs` 把它们复制进 `runtime/node_modules/`
+- 应用启动时 `src/server/server.mjs` 把它们**链接进 profile 的 `node_modules`** 并**登记为 profile bundle**
+- `dsh` 装载它们：host 半边注册 HTTP 路由，client 半边注册到输入框工具栏的槽位
+
+因此它们与官方插件在机制上完全平等，`dsh` 升级不会因为它们不是官方包而失效。
 
 ---
 
@@ -269,8 +320,7 @@ app.asar
 
 ### 在哪里触发更新
 
-两条轨道共用一个入口：**菜单栏 → 更新 → 检查更新…**（`Ctrl+Shift+U`），
-或托盘右键 →「检查更新…」。
+两条轨道共用一个入口：**菜单栏 → 更新 → 检查更新…**（`Ctrl+Shift+U`），或托盘右键 →「检查更新…」。
 
 窗口立刻打开并显示「正在检查」，两条检查**并行**进行、结果各自推送：
 
@@ -279,16 +329,7 @@ app.asar
 | **智能体运行时** | 已安装版本、该通道最新版本、运行时来源（内置 / 已下载）、所用源、通道、安装位置 |
 | **应用外壳** | 已安装版本、最新已发布版本 |
 
-有可用更新时，对应分节下方会出现操作按钮（运行时是「更新运行时并重启」，外壳是
-「下载并安装」，下载时显示百分比进度）。
-
-**应用外壳无法检查时会说明原因**，而不是只显示一句「无法检查」。开发模式下运行的
-未打包应用没有 `app-update.yml`，因此自更新不可用，窗口里会直接写明这一点。
-
-> 启动时**不再**自动静默检查外壳更新。此前那会在启动后偷偷弹一个对话框，用户既不
-> 知道是谁触发的、也不知道何时检查的。现在两条轨道都只在用户主动打开更新时检查；
-> 唯一的例外是 `autoInstallOnAppQuit`——已经下载完成的更新会在退出时安装，避免
-> 用户点了下载却因为忘记重启而一直用旧版本。
+> 启动时**不再**自动静默检查外壳更新。此前那会在启动后偷偷弹一个对话框，用户既不知道是谁触发的、也不知道何时检查的。
 
 ### 安全设计
 
@@ -298,331 +339,310 @@ app.asar
 
 ### 通道
 
-默认跟随 `latest`。可以改成本应用设置目录下 `settings.json` 里的 `channel` 字段：
+运行时更新跟随 npm 的 dist-tag。默认走 `latest`，可在设置中改为 `next` 或 `alpha`。
 
-```json
-{ "channel": "next" }
-```
+默认 registry 是 `https://registry.npmmirror.com`（国内可达性更好），失败时回退到 `https://registry.npmjs.org`。
 
-可选值：`latest`、`next`、`alpha`。
+> `latest` 在镜像上**可能比 `next` 旧**。需要更新的版本时请显式把通道改为 `next`。
 
 ---
 
 ## 凭据存储
 
-API Key 用 Electron 的 `safeStorage` 加密（Windows 走 DPAPI，macOS 走 Keychain，Linux 走 libsecret）：随机 32 字节数据密钥由系统密钥链包裹，凭据表用 AES-256-GCM 密封存入 `<userData>/credentials/sealed.bin`。
+API Key 等凭据用 **Electron 的 `safeStorage`** 加密后存放在本应用的数据目录：
 
-投递给 harness 不需要自定义 provider。`dsh` 的凭据解析有固定优先级，其中**启动环境变量优先**：
+| 平台 | 底层机制 |
+|---|---|
+| Windows | DPAPI |
+| macOS | Keychain |
+| Linux | libsecret（缺失时无法加密，会明确告知） |
 
-```
-启动环境变量  >  存储文件  >  项目 .env  >  主目录 .env
-```
+主进程解密后，把凭据**通过子进程的启动环境**传给 dsh——这排在 dsh 自己的凭据优先级最高位，因此不会与命令行 `dsh` 的存储互相干扰。
 
-所以外壳解密后把值通过环境变量传给子进程，行为与 `DEEPSEEK_API_KEY=… dsh` 完全一致，并在设置界面里正确地显示为只读。
-
-若系统加密不可用（例如缺少 libsecret 的 Linux），存储会报告不可用，而**不会**静默降级成明文；此时 `$DSH_HOME` 下官方的文件式 provider 仍可正常工作。
+应用使用**独立的 Harness 主目录**（`<userData>/home`），与命令行 `dsh` 的 `~/.dsh` 完全分离：**两者可以同时使用，互不影响**。
 
 ---
 
-## 从源码构建
+## 二次开发
 
-**打包机**需要 Node.js 20+ 与 npm（终端用户不需要）。
+### 环境要求
+
+| 项 | 版本 |
+|---|---|
+| Node.js | 22.13+ 或 24（构建机需要；最终用户不需要） |
+| npm | 随 Node 提供 |
+| 平台 | Windows / macOS / Linux 均可开发，但**打包受平台限制**（见下） |
+
+首次构建需要联网：要下载 Electron、便携 Node 与 `@deepseek-ai/dsh`（合计约 700 MB），之后复用缓存。
+
+### 起步
 
 ```bash
-git clone <本仓库地址>
-cd dsh-desktop
-npm install
-npm run icon       # 生成占位图标 build/icon.png（见下）
-npm run stage      # 准备内置运行时、便携 Node，并链接开发期依赖
-npm run dev        # 编译并启动未打包的应用
+git clone https://github.com/pucj0/deepseek-harness-desktop.git
+cd deepseek-harness-desktop
+npm ci                # 安装依赖（postinstall 会链接运行时，此时尚无 runtime/ 属正常）
+npm run stage         # 下载运行时 + 便携 Node + 压缩归档（首次约数分钟，含 11 分钟压缩）
+npm run build         # 编译 TypeScript 到 dist/
+npm start             # 启动（需已 stage）
 ```
 
-> **关于图标**：`build/icon.png` 被 `.gitignore` 排除，因为仓库里不该塞占位资源。
-> 打包前必须先执行一次 `npm run icon`；正式发布请把它换成你的品牌图标
-> （256×256 或更大的 PNG，或 ico/icns）。
-
-单独执行各步骤：
+### 开发期运行
 
 ```bash
-npm run stage:runtime                  # @deepseek-ai/dsh@latest
-npm run stage:runtime -- next          # 跟随 dist-tag：latest | next | alpha
-npm run stage:runtime -- 0.1.5-rc.2    # 固定到指定版本
-npm run stage:node                     # 固定版本的便携 Node（按当前平台）
-npm run stage:node darwin arm64        # 交叉准备其它平台的 Node
-npm run build                          # 只编译 TypeScript
-npm run typecheck                      # 只做类型检查
+npm run dev           # 编译后启动
+npm start             # 不编译直接启动（改完源码需先 build）
+```
+
+Windows 上推荐用仓库自带的 `run-dev.bat`：它在**独立的可见窗口**里启动，便于看到 stdout/stderr，也避免被沙箱的 Job 对象回收。
+
+```bat
+run-dev.bat           独立窗口启动开发版
+rebuild-and-install.bat   重新编译、打包并安装到本机（用于验证打包后的行为）
 ```
 
 ### 开发期状态隔离
 
-`DSH_DESKTOP_HOME` 可以覆盖每用户数据目录（harness 主目录、窗口几何、凭据、已下载的运行时都在里面）：
+`DSH_DESKTOP_HOME` 可把应用数据目录指向别处，从而与日常使用的实例完全隔离：
 
-```powershell
-$env:DSH_DESKTOP_HOME="$PWD\.dev-home"
-npm run dev
+```bash
+DSH_DESKTOP_HOME=./.dev-home npm start
 ```
 
-不加这个变量时，开发运行和已安装版本会共用同一个目录（因为二者的 `package.json` 名字相同），互相覆盖状态。
+**注意**：它**不改变单实例锁的作用域**——锁由 `app.getPath('userData')` 决定，在读取该变量之前就已确定。因此开发版与已安装版**不能同时运行**：同时启动时第二个会聚焦第一个的窗口后退出（表现为"静默退出、退出码 0"）。
+
+### 可用的环境变量
+
+| 变量 | 作用 |
+|---|---|
+| `DSH_DESKTOP_HOME` | 覆盖应用数据目录（开发期隔离、测试用） |
+| `DSH_DESKTOP_TIMING=1` | 让服务端把各启动阶段耗时打到 stderr（定位"启动慢"用） |
+| `DSH_DESKTOP_DUMP_MENU=1` | 打印应用菜单结构后退出（菜单改动的快速断言） |
+| `DSH_DESKTOP_WORKSPACE` | 由外壳注入给插件，无需手工设置 |
+| `DSH_HOME` | Harness 主目录（由外壳注入给插件） |
 
 ### 国内构建机的镜像配置
 
-`.npmrc` 已经把 registry 指向镜像。但**两个 electron-builder 的镜像提示不是合法的 npm 配置项**（npm 会对未知键告警），要用环境变量传：
+首次下载量大，建议设置镜像：
 
-```powershell
-$env:ELECTRON_MIRROR='https://registry.npmmirror.com/-/binary/electron/'
-$env:ELECTRON_BUILDER_BINARIES_MIRROR='https://registry.npmmirror.com/-/binary/electron-builder-binaries/'
-npm run dist
+```bash
+npm config set registry https://registry.npmmirror.com
+set ELECTRON_MIRROR=https://registry.npmmirror.com/-/binary/electron/
+set ELECTRON_BUILDER_BINARIES_MIRROR=https://registry.npmmirror.com/-/binary/electron-builder-binaries/
 ```
 
-`scripts/stage-node.mjs` 识别 `DSH_NODE_MIRROR` 与 `DSH_NODE_VERSION`，`scripts/stage-runtime.mjs` 识别 `DSH_STAGE_REGISTRY`。
+`scripts/build.mjs` 与 `build.bat` 会自动带上这些设置。
+
+### 开发新插件
+
+两个内置插件是本仓库最好的范例，照它们的结构新增一个即可：
+
+```
+plugins/dsh-client-ui-<名字>/
+  package.json          # 声明 dsh.bundle.patch 与 dsh.client
+  cordis.patch.yml      # 用 - insert: 挂载自己
+  lib/index.js          # host 半边（可选，注册 HTTP 路由等）
+  lib/client.js         # client 半边（注册界面）
+```
+
+三个必须注意的点（都是实际踩过的）：
+
+1. **`cordis.patch.yml` 里新增行必须包在 `- insert:` 之下。** 写成顶层会被当作"按 id 覆盖既有行"，而该 id 不存在，于是既不报错也不生效。
+2. **客户端半边的 `exports.inject` 必须声明 `['slots', 'locale']`。** 漏了会抛 `cannot get property "slots" without inject`，而且这个错误会让**整个界面白屏**，不只是你的插件。
+3. **`package.json` 必须同时声明 `dsh.bundle.patch` 与 `dsh.client`**，否则 dsh 在装载阶段直接报错。
+
+新插件写好后，把它加进 `src/server/server.mjs` 的 `BUNDLED_PLUGINS` 数组，它就会在启动时自动链接进 profile 并登记为 bundle。
+
+### 测试
+
+```bash
+npm run typecheck                  # 类型检查
+node scripts/test-i18n.cjs         # 外壳中英文案键位对齐
+node scripts/test-version.mjs      # 版本递增规则与节流
+node scripts/check-imports.mjs     # 相对 import 目标存在（防"忘了提交文件"）
+node scripts/check-version.mjs     # package.json / lock / packages[""] 三处版本一致
+node scripts/test-unpack.mjs       # 运行时解包（含进度取值、归档完整性）
+node scripts/test-gitbar-checkout.mjs    # 分支切换（一次性临时仓库）
+node scripts/test-gitbar-workspace.mjs   # 插件按请求的工作区查询
+node scripts/test-review-host.mjs        # 审查插件的快照与差异
+node scripts/check-plugin-i18n.mjs       # 插件里没有硬编码文案
+```
+
+> 会移动工作区状态的测试（分支切换、审查）一律使用**一次性临时仓库**——绝不能拿真实仓库当试验场。
+
+### 诊断脚本
+
+`scripts/` 下有大量诊断工具，都是为定位具体问题写的，可直接复用：
+
+| 脚本 | 用途 |
+|---|---|
+| `probe-startup.mjs` | 启动各阶段耗时（定位"启动慢"） |
+| `probe-boot-manifest.mjs` | 客户端插件是否进入模块图 |
+| `cdp-errors.mjs` | 通过 CDP 读渲染进程控制台报错（白屏问题用） |
+| `cdp-eval.mjs` / `cdp-read.mjs` | 在渲染进程里求值 / 读 DOM（比截图可靠） |
+| `probe-installed-gitbar.mjs` | 扫本地端口，验证已安装实例的插件路由 |
+| `doctor.mjs` | 只读诊断模块回退链接 |
+| `ci-status.mjs` / `ci-tail.mjs` / `ci-grep.mjs` | 查 GitHub Actions 状态与日志 |
 
 ---
 
-## 打包
+## 打包与发布
+
+### 各平台的可构建性（已实测）
+
+| 目标 | Windows 构建机 | Linux 构建机 | macOS 构建机 |
+|---|---|---|---|
+| Windows NSIS + MSI | ✅ | ❌（需 WiX） | ❌ |
+| Linux AppImage / deb / rpm | ❌（需 `mksquashfs`、`fpm`） | ✅ | ❌ |
+| macOS dmg | ❌（需 `hdiutil`、`codesign`） | ❌ | ✅ |
+
+因此**三平台产物由 GitHub Actions 生成**：每个平台在自己的 runner 上构建。
 
 ### 用 bat 一键打包（Windows 构建机）
 
 ```bat
-build.bat            打包 Windows（setup.exe + .msi）
-build.bat linux      打包 Linux（AppImage + .deb）
-build.bat all        打包 Windows + Linux
-build.bat mac        显示 macOS 打包说明
-build.bat clean      清理 dist 与当前版本目录后完整打包 Windows
-build.bat help       完整用法
+build.bat                打包 Windows：NSIS setup.exe
+build.bat msi            只出 .msi
+build.bat clean          清理 dist 与当前版本目录后完整打包
+build.bat help           显示说明
+build.bat win --no-bump  按当前版本重新打包，不递增版本号
 ```
 
-环境变量：
-
-```bat
-set SKIP_STAGE=1     跳过运行时准备（已 stage 过，可省数分钟）
-set SKIP_INSTALL=1   跳过 npm install
-```
-
-#### 产物按版本分目录
-
-每个版本一个目录，**文件名里不带版本号**：
-
-```
-release/
-  1.0.0/
-    DeepSeek Harness-x64.exe          ← NSIS 安装程序
-    DeepSeek Harness-x64.exe.blockmap
-    DeepSeek Harness-x64.msi
-    latest.yml                        ← electron-updater 的元数据
-  1.0.1/
-    …
-  latest.txt                          ← 指向最新版本目录名
-```
-
-这样同平台多版本可以并存，升级时不会互相覆盖，文件名也不会随版本号反复变动
-（对外下载链接更稳定）。
-
-`build.bat clean` **只清当前版本目录**，不动其它版本——那正是分目录的意义。
-
-### 各平台的可构建性（已实测，非推测）
-
-| 目标 | 能否在 Windows 上构建 | 原因 |
-|---|---|---|
-| `setup.exe`（NSIS） | ✅ | |
-| `.msi` | ✅ | 需要 WiX，electron-builder 会自动下载 |
-| `.AppImage` | ❌ | 需要 Linux 版 `mksquashfs`，报错 `appimage-12.0.1/linux-x64/mksquashfs: file does not exist` |
-| `.deb` / `.rpm` | ❌ | 需要 `fpm`，报错 `fpm: executable file not found in %PATH%` |
-| `.dmg` / `.zip`（macOS） | ❌ | 需要 `hdiutil` / `codesign` / `productbuild`，只在 macOS 上存在 |
-
-**Linux 与 macOS 产物无法在 Windows 上生成**——这是构建工具链缺失，不是配置问题。
-因此 `build.bat linux` 与 `build.bat mac` 会**立即停止**并打印替代方案，
-而不是先下载几百 MB 再失败。
-
-两种获得 Linux / macOS 产物的方式：
-
-1. 在 Linux（或 WSL）上 `npm run dist:linux`，在 macOS 上 `npm run dist:mac`
-2. 用 GitHub Actions 工作流——**推荐**，一次把三个平台都打出来
+`build.bat` 内部调用 `scripts/build.mjs`，`.bat` 文件**保持纯 ASCII**——`cmd.exe` 按字节读取批处理，多字节 UTF-8 会被拆开当成命令（这个坑踩过）。
 
 ### GitHub Actions
 
-`.github/workflows/release.yml` 在三个平台各自的 runner 上并行打包：
+推送到 `v*` 标签会触发 `.github/workflows/release.yml`：
 
-- **windows-latest** → `setup.exe` + `.msi`
-- **ubuntu-latest** → `AppImage` + `.deb` + `.rpm`
-- **macos-latest** → `x64` 与 `arm64` 的 `.dmg` + `.zip`
+1. 三个平台并行构建（含运行时 staging 与 brotli 压缩，每平台约 11 分钟）
+2. 产物统一收集到扁平目录再上传（避免把 `win-unpacked` 里的构建工具产物带进 Release）
+3. 单个 job 创建 Release，正文取自仓库里的 `RELEASE_NOTES.md`
 
-触发方式：
+首次发布前需确认 `electron-builder.yml` 里的 `publish.owner` / `publish.repo` 指向你的仓库。
 
-```bash
-# 打标签即自动打包并创建草稿 Release
-git tag v1.0.0
-git push origin v1.0.0
-```
+### 版本管理
 
-也可以在 Actions 页面手动触发（只打包，产物作为 artifact 上传，不创建 Release）。
+版本号只写在 `package.json` 里（`package-lock.json` 会同步，否则 `npm ci` 会失败）。
 
-**运行状态**：可以在 [Actions](../../actions) 页面查看三平台构建进度。
-
-**已配置**：`publish.owner` / `publish.repo` 已指向本仓库，推 `v*` 标签即可直接发布。
-
-**若要启用签名**（可选），配置这些仓库密钥：
-
-| 密钥 | 用途 |
-|---|---|
-| `MAC_CERT_P12` / `MAC_CERT_PASSWORD` | macOS 代码签名证书 |
-| `APPLE_ID` / `APPLE_APP_SPECIFIC_PASSWORD` / `APPLE_TEAM_ID` | macOS 公证 |
-
-未配置证书时产物可正常使用，但 Windows SmartScreen 和 macOS Gatekeeper 会给出警告。
-
----
-
-## 版本管理
-
-版本号只写在 `package.json` 里（`package-lock.json` 会同步，否则 `npm ci` 会失败），
-`electron-builder` 从那里读取，产物目录名也用它。
-
-### 打包会自动递增
-
-**每次 `build.bat` 都会自动 +1**，所以连续打包得到的是各自独立的版本目录：
+**每次 `build.bat` 都会自动 +1**，递增规则是先在次版本内走完补丁号：
 
 ```
-build.bat   →  1.0.0 → release/1.0.0/
-build.bat   →  1.0.1 → release/1.0.1/
-build.bat   →  1.0.2 → release/1.0.2/
+1.0.0 → 1.0.1 → … → 1.0.9 → 1.1.0 → 1.1.1 → … → 1.1.9 → 1.2.0
 ```
 
-递增规则：补丁号到 `.9` 之后进位到次版本并把补丁归零。
-
-```
-1.0.0 → 1.0.1 → … → 1.0.8 → 1.0.9 → 1.1.0 → 1.1.1 → …
-```
-
-**不改版本号重新打包**：加 `--no-bump`（改了打包配置后想按原版本重验时用）。
+不改版本号重新打包用 `--no-bump`；调试期 5 分钟内的重复打包不会反复递增。手动管理：
 
 ```bat
-build.bat win --no-bump
-```
-
-**调试期不会被反复吃掉版本号**：同一版本在 5 分钟内的重复打包不会再次递增。
-需要强制递增时用 `version.bat next --force`。
-
-### 手动管理
-
-```bat
-version.bat             显示当前版本与下一个版本
+version.bat             显示当前与下一个版本
 version.bat next        递增（受 5 分钟节流限制）
 version.bat next --force 强制递增
-version.bat list        列出发布序列
-version.bat 1.0.3       显式设置
 ```
-
-核查三处版本是否一致（不一致会让 CI 的 `npm ci` 失败）：
-
-```bat
-node scripts\check-version.mjs
-```
-
-一次典型的发布流程：
-
-```bat
-:: 1. 先写本版本的更新说明（见下节），RELEASE_NOTES.md 的标题必须是本次版本号
-:: 2. 发布：递增版本、提交、打标签、推送，触发 CI
-release.bat
-```
-
-推送标签后，GitHub Actions 会在三个平台打包并**直接发布** Release（不是草稿），
-并把 `RELEASE_NOTES.md` 的内容填进 Release 正文。
-
-> 注意：`build.bat` 也会自动递增版本号。**本地打包通常只用于自测**；正式发布请用
-> `release.bat`，它会在打标签前校验标签与 `package.json` 的版本一致、且发布说明已写好。
 
 ### 发布说明（每个版本必填）
 
 每个版本的「本次更新内容」写在仓库根目录的 `RELEASE_NOTES.md`：
 
 ```markdown
-# 1.0.9
+# 1.1.3
 
 ## 修复
 
 - 这次修了什么，对用户意味着什么
 ```
 
-**`release.bat` 会强制校验**：文件必须存在，且第一个标题里必须出现本次版本号——
-否则拒绝发布。做成硬性检查是因为"忘了写"从外部看不出来：Release 会照常发出，只是
-没有更新内容，而用户正是来看这个的。CI 另会把该标签之前的提交列表附在正文末尾作为
-完整变更。
+**`release.bat` 会强制校验**：文件必须存在，且第一个标题里必须出现本次版本号——否则拒绝发布。做成硬性检查是因为"忘了写"从外部看不出来：Release 会照常发出，只是没有更新内容，而用户正是来看这个的。
 
-发布完成后把标题改成下一个版本号，继续写下一版。
+### 一键发布
+
+```bat
+release.bat              按序列发下一个版本：递增、提交、打标签、推送、触发 CI
+release.bat 1.1.0        指定版本号（必须与序列一致）
+release.bat --force      允许跳出序列（大版本时用）
+release.bat --dry-run    只打印将要发生的事
+```
+
+`release.bat` 在打标签前会强制核对：工作区干净、标签不存在、标签版本与 `package.json` 一致、`package-lock.json` 已同步、发布说明已写好。
 
 ---
 
 ## 项目结构
 
-| 路径 | 作用 |
-|---|---|
-| `src/main/index.ts` | 生命周期：单实例、装配、托盘、更新对话框、IPC |
-| `src/main/i18n.ts` | 外壳本地化目录（跟随系统语言） |
-| `src/main/dsh-server.ts` | 生成并监管服务端子进程；解析就绪信号 |
-| `src/main/window.ts` | `BrowserWindow`、token 握手、导航围栏、几何记忆 |
-| `src/main/paths.ts` | 开发态与打包态的运行时 / 工具链解析 |
-| `src/main/updater.ts` | registry 查询、版本化安装、联接切换、回退 |
-| `src/main/credentials.ts` | 基于 `safeStorage` 的密封凭据存储 |
-| `src/main/tray.ts` | 托盘菜单与关闭到托盘 |
-| `src/preload/preload.ts` | 最小 `contextBridge` 暴露面 |
-| `src/server/server.mjs` | 启动链，由子进程执行 |
-| `scripts/build.mjs` | 打包编排（bat 只是瘦封装） |
-| `scripts/version.mjs` | 版本号管理 |
-| `scripts/stage-runtime.mjs` | 把 `@deepseek-ai/dsh` 装到 `runtime/` |
-| `scripts/stage-node.mjs` | 下载并校验便携 Node（跨平台） |
-| `scripts/link-runtime.mjs` | 开发期链接，使工程内可解析运行时 |
-| `scripts/generate-icon.mjs` | 零依赖 PNG 图标生成器 |
-| `build.bat` / `version.bat` | 一键打包 / 版本管理 |
+```
+src/
+  main/                         Electron 主进程
+    index.ts                    生命周期、菜单、托盘、启动编排
+    window.ts                   窗口与加载页（含"先显示后导航"）
+    paths.ts                    运行时位置解析
+    runtime-unpack.ts           内置运行时的解包（单状态机）
+    dsh-server.ts               spawn 并监督服务端子进程
+    updater.ts                  运行时更新（npm）
+    shell-updater.ts            外壳更新（electron-updater）
+    credentials.ts              凭据加密存储（safeStorage）
+    module-heal.ts              修复失效的模块回退链接
+    workspace.ts                工作区路径工具
+    settings.ts                 外壳设置读写
+    git.ts                      git 状态探测
+    panel.ts / project-info.ts / update-window.ts   三个信息面板
+    i18n.ts                     外壳中英文案
+  preload/                      渲染进程桥（contextIsolation + sandbox）
+  server/server.mjs             服务端启动脚本（在 dsh 的 Node 里运行）
 
-### 诊断脚本
+plugins/
+  dsh-client-ui-gitbar/         分支徽章与切换
+  dsh-client-ui-review/         本轮修改审查
 
-构建机辅助工具，不随包发布。它们存在是因为本 README 里的每条结论都是**验证过**的，而不是假设的：
+scripts/                        构建、打包、发布与诊断工具（见上）
 
-| 脚本 | 用途 |
-|---|---|
-| `scripts/test-i18n.cjs` | 断言语言映射与中英键位对齐 |
-| `scripts/probe-web.mjs` | 不启动 GUI，直接验证运行时能否服务 |
-| `scripts/probe-ui.mjs` | 通过 CDP 读取真实 DOM 控件、点击、求值 |
-| `scripts/probe-locale.cjs` | 打印 Electron 语言相关 API 的实际取值 |
-| `scripts/probe-tray.cjs` | 验证托盘图标 PNG 可加载且 `Tray` 可构造 |
-| `scripts/capture-window.cjs` | 截图窗口，用于验证布局结论 |
+build/
+  icon.png                      应用图标（1024×1024）
+  entitlements.mac.plist        macOS 硬运行时权限
+```
 
 ---
 
 ## 已知限制
 
-- **Windows / macOS / Linux 三平台的构建配置都已就绪，但只在 Windows 上端到端验证过。** Linux 与 macOS 产物由 CI 生成，尚未在真机安装验证。
-- **应用外壳自更新尚未在真机上端到端验证。** 代码路径已接线、元数据文件也已随 Release 发布，但要真正验证需要"发布新版本 → 旧版本自动升级"的完整往返，这需要两个真实发布版本。**已经修掉的一个前置障碍**：metadata 里的文件名必须与 Release 附件名逐字一致，此前因 `productName` 含空格而不一致（详见下文 productName 说明）。
-- **`productName` 为 `dsh-desktop`，因此安装位置与可执行文件名不含空格。** 早期版本（v1.0.0）用的是 `DeepSeek Harness`，安装目录为 `%LOCALAPPDATA%\Programs\DeepSeek Harness\`；现在同一位置变成 `…\Programs\dsh-desktop\`。升级前请先卸载旧版本，否则会留下两个安装。改名是必需的：只有文件名里没有空格，electron-builder 生成的 metadata 与 GitHub 上的附件名才会逐字相同，自动更新才能找到下载文件。面向用户显示的名称（快捷方式、窗口标题）不受影响，仍是「DeepSeek Harness」。
-- **运行时更新依赖 npm。** 应用内置了 npm（约 5 MB）并由 Electron 自带的 Node 驱动它。不自己实现 semver 解析与 peer 提升，是因为错误依赖树会产生"能启动但行为异常"的应用，风险不值得。
-- **内置的 `desktop` profile 无法通过命令行定制。** `dsh --profile desktop` 被官方刻意拒绝；要定制请改 `$DSH_HOME/profiles/desktop/cordis.patch.yml`，运行时热重载。
-- **右侧栏的状态仅存于内存。** 刷新后每个会话回到收起状态（官方行为）。
-- **`stage:runtime` 默认跟随 `latest` 通道。** 镜像上 `latest` 可能比 `next` 旧，需要新版请显式指定 `npm run stage:runtime -- next`。
-- **首次构建需要网络**，要下载 Electron、便携 Node 与 `@deepseek-ai/dsh`（合计约 700 MB），之后复用缓存。
+- **Windows 已端到端验证；Linux 与 macOS 的产物由 CI 生成，尚未在真机安装验证。**
+- **应用外壳自更新尚未在真机上端到端验证。** 代码路径已接线、元数据文件也已随 Release 发布，但要真正验证需要"发布新版本 → 旧版本自动升级"的完整往返。
+- **安装包体积的下限由 Electron 决定。** 实测：Electron 分发包解包 268 MB / 压缩 110 MB（`electron.exe` 单个 180 MB，内嵌 Chromium 与 V8，压缩率仅约 40%）。因此**带 Electron 的方案不可能做到 30 MB 以内**；要做到那个量级必须换成系统 WebView2 外壳，代价是首次启动需联网获取运行时。当前形态（124 MB）是保持"装完即用、离线可跑"前提下的实测结果。
+- **运行时更新依赖 npm。** 应用内置了 npm（约 5 MB）并由 Electron 自带的 Node 驱动它。不自己实现 semver 解析与 peer 提升，是因为错误依赖树会产生"能启动但行为异常"的应用。
+- **本轮修改审查的基线存在宿主进程内存中。** 应用重启后需重新开始一轮才会再次记录基线。
+- **内置的 `desktop` profile 无法通过命令行定制。** `dsh --profile desktop` 被官方刻意拒绝；要定制请改 `<userData>/home/profiles/desktop/cordis.patch.yml`，运行时热重载。
+- **`.msi` 的安装界面是英文**（原因见 [安装界面语言](#安装界面语言)）。
+- **`productName` 为 `dsh-desktop`，因此安装路径与可执行文件名不含空格。** 这是必需的：只有文件名无空格，electron-builder 生成的更新元数据与 GitHub 上的附件名才会逐字相同，自动更新才能找到下载文件。面向用户显示的名称（快捷方式、窗口标题）仍是「DeepSeek Harness」。
+- **首次构建需要联网**，要下载 Electron、便携 Node 与 `@deepseek-ai/dsh`（合计约 700 MB）。
 
 ---
 
 ## 故障排查
 
+**应用启动后随即静默退出，退出码 0。**
+单实例锁已被占用。锁的作用域由 `app.getPath('userData')` 决定，`DSH_DESKTOP_HOME` **不改变**它。请先关闭已安装的版本（或另一个开发实例）。
+
+**启动页长时间停在"正在解包内置运行时"。**
+首次启动的正常行为（约 10 秒）。若超过一分钟，检查磁盘空间（需约 200 MB）与杀毒软件是否拦截了大量小文件写入。
+
 **弹窗提示 `Error launching app`，路径看起来像 JavaScript 源码。**
-Electron 没有 `-e` 参数——那是 Node 的。执行 `npx electron -e "…"` 会让 Electron 把源码文本当成*应用路径*，加载失败后弹出该对话框。请改用脚本文件（`npx electron scripts/probe-*.cjs`）。该对话框是 Windows 原生消息框，**不随父进程退出而关闭**：杀掉父进程不会关掉它。
+Electron 没有 `-e` 参数——那是 Node 的。执行 `npx electron -e "…"` 会让 Electron 把源码文本当成*应用路径*，加载失败后弹出该对话框。请改用脚本文件（`npx electron scripts/probe-*.cjs`）。该对话框是 Windows 原生消息框，**不随父进程退出而关闭**。
 
-**开发运行立即退出、退出码 0、没有任何输出。**
-单实例锁被已在运行的副本占用。每个用户数据目录只允许一个实例，而且 **`DSH_DESKTOP_HOME` 不会改变锁的作用域**——Electron 在我读取该覆盖变量之前就已从 `app.getPath('userData')` 推导出锁。关掉已安装的应用（或它的托盘图标）再试。
+**启动失败并提示 `Cannot find package '@deepseek-ai/dsh-client-ui-…'`。**
+模块回退链接失效。先运行 `node scripts/doctor.mjs` 诊断，应用在每次启动时也会自动扫描并修复；修复发生在启动阶段，重启一次即可。
 
-**打包报 `remove …\resources\app.asar: The process cannot access the file because it is being used by another process`。**
-Windows Defender 或搜索索引服务在测试运行后仍持有刚写入的 asar。通常会自动释放；若没有，改用其它输出目录（`directories.output`），或等一会儿再删 `release/win-unpacked`。
+**打包失败，`remove …\resources\app.asar: The process cannot access the file`。**
+Windows Defender 或搜索索引器正在占用刚写好的 asar。换一个输出目录，或稍等后重试。
 
-**应用能打开但智能体运行时启动失败。**
-`dsh-desktop` 把子进程非零退出视为启动失败，并显示子进程最后的输出。优先检查两件事：启动脚本是否与运行时的 `node_modules` 同级（见[运行时目录布局](#运行时目录布局)），以及内置 Node 是否过旧。
+**`.bat` 输出乱码，或提示 `'xxx' is not recognized as an internal or external command`。**
+`cmd.exe` 按字节读取 `.bat`，会把多字节 UTF-8 字符拆开当成命令。本项目的 `.bat` 文件因此**保持纯 ASCII**，所有中文输出都由 `scripts/*.mjs` 打印。
 
-**`.bat` 文件里出现乱码或 `'xxx' is not recognized as an internal or external command`。**
-`cmd.exe` 按字节读取 `.bat`，会把多字节 UTF-8 字符拆开当成命令。因此本项目的 `.bat` 文件**保持纯 ASCII**，所有中文输出都由 `scripts/*.mjs` 打印。修改 bat 时请遵守这一点。
+**从 PowerShell 里读含中文的文件显示乱码。**
+PowerShell 的 `Get-Content` 对无 BOM 的 UTF-8 按 ANSI 解码，显示为乱码，但**文件本身没有坏**。请用 `read` 工具或 Node 读取。
+
+**`npm.ps1` 无法加载（执行策略）。**
+用 `node <路径>/npm-cli.js <命令>` 绕过，或执行 `Set-ExecutionPolicy -Scope Process Bypass`。
 
 ---
 
 ## 许可证
 
-MIT。
+MIT。详见 [LICENSE](LICENSE)。
 
-本项目打包了 MIT 许可的官方 DeepSeek Harness 运行时，上游项目：<https://github.com/deepseek-ai/deepseek-harness>
+本项目分发 `@deepseek-ai/dsh` 及其依赖，它们各自遵循自己的许可证。DeepSeek Harness 的版权归其作者所有；本项目不对其做任何修改，仅通过公开 API 使用并提供桌面外壳。
