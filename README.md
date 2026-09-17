@@ -59,7 +59,7 @@ dsh web          # 然后在浏览器里打开它打印的地址
 | **不做 fork** | 通过公开 API 使用 `dsh`，升级无合并负担，行为可预期 |
 | **双轨更新** | 智能体运行时与外壳各自独立更新，互不牵连 |
 | **凭据进系统密钥链** | 不落明文，与命令行 `dsh` 的安装完全隔离、可共存 |
-| **一次安装，三平台可用** | Windows（NSIS / MSI）、macOS（dmg）、Linux（AppImage / deb / rpm） |
+| **一次安装，三平台可用** | Windows（NSIS）、macOS（dmg）、Linux（AppImage / deb / rpm） |
 
 ---
 
@@ -124,7 +124,6 @@ dsh web          # 然后在浏览器里打开它打印的地址
 | 平台 | 文件 | 说明 |
 |---|---|---|
 | **Windows** | `dsh-desktop-x64.exe` | NSIS 安装程序，可选安装目录，**中文界面** |
-| **Windows** | `dsh-desktop-x64.msi` | 适用于企业批量部署 / 组策略 |
 | **Linux** | `dsh-desktop-x86_64.AppImage` | 免安装，`chmod +x` 后直接运行 |
 | **Linux** | `dsh-desktop-amd64.deb` | Debian / Ubuntu |
 | **macOS** | `dsh-desktop-x64.dmg` | Intel 芯片 |
@@ -177,7 +176,6 @@ xattr -dr com.apple.quarantine "/Applications/dsh-desktop.app"
 | 平台 | 安装界面 | 语言 |
 |---|---|---|
 | Windows `setup.exe` | NSIS 安装向导 | **简体中文** |
-| Windows `.msi` | Windows Installer 向导 | 英文（见下） |
 | Linux `.deb` / AppImage | 无界面，`dpkg -i` / 直接运行 | 不适用 |
 | macOS `.dmg` | 无界面，拖拽到「应用程序」 | 不适用 |
 
@@ -189,7 +187,7 @@ nsis:
   installerLanguages: [zh_CN]  # 语言名，映射到 NSIS 自带的 SimpChinese
 ```
 
-MSI 目前仍是英文：electron-builder 的 MsiTarget 不提供语言选项，其拉取的 WiX 工具链只含 `WixUIExtension.dll`、不含本地化 `.wxl` 文件。中文 MSI 需要自建 WiX UI 扩展，暂未实现。
+> Windows 的 `.msi` **不再随 Release 发布**。它的安装界面只有英文——MsiTarget 不提供语言选项，其拉取的 WiX 工具链只含 `WixUIExtension.dll`、不含本地化 `.wxl` 文件；且构建需要很短的路径根（WiX 受 `MAX_PATH` 限制）。目标本身仍保留，需要时可在本地出：`npx electron-builder --win msi --x64`。
 
 > 这是**安装程序**的语言；安装后的应用界面跟随系统语言（中英文），由 `src/main/i18n.ts` 控制。
 
@@ -515,7 +513,7 @@ node scripts/check-plugin-i18n.mjs       # 插件里没有硬编码文案
 
 | 目标 | Windows 构建机 | Linux 构建机 | macOS 构建机 |
 |---|---|---|---|
-| Windows NSIS + MSI | ✅ | ❌（需 WiX） | ❌ |
+| Windows NSIS | ✅ | ❌ | ❌ |
 | Linux AppImage / deb / rpm | ❌（需 `mksquashfs`、`fpm`） | ✅ | ❌ |
 | macOS dmg | ❌（需 `hdiutil`、`codesign`） | ❌ | ✅ |
 
@@ -525,7 +523,7 @@ node scripts/check-plugin-i18n.mjs       # 插件里没有硬编码文案
 
 ```bat
 build.bat                打包 Windows：NSIS setup.exe
-build.bat msi            只出 .msi
+build.bat msi            只出 .msi（本地按需；不再随 Release 发布）
 build.bat clean          清理 dist 与当前版本目录后完整打包
 build.bat help           显示说明
 build.bat win --no-bump  按当前版本重新打包，不递增版本号
@@ -631,7 +629,7 @@ build/
 - **运行时更新依赖 npm。** 应用内置了 npm（约 5 MB）并由 Electron 自带的 Node 驱动它。不自己实现 semver 解析与 peer 提升，是因为错误依赖树会产生"能启动但行为异常"的应用。
 - **本轮修改审查的基线存在宿主进程内存中。** 应用重启后需重新开始一轮才会再次记录基线。
 - **内置的 `desktop` profile 无法通过命令行定制。** `dsh --profile desktop` 被官方刻意拒绝；要定制请改 `<userData>/home/profiles/desktop/cordis.patch.yml`，运行时热重载。
-- **`.msi` 的安装界面是英文**（原因见 [安装界面语言](#安装界面语言)）。
+- **不再发布 `.msi`。** 其安装界面只有英文，且构建受 WiX 的路径长度限制；需要时可在本地生成（见 [打包与发布](#打包与发布)）。
 - **`productName` 为 `dsh-desktop`，因此安装路径与可执行文件名不含空格。** 这是必需的：只有文件名无空格，electron-builder 生成的更新元数据与 GitHub 上的附件名才会逐字相同，自动更新才能找到下载文件。面向用户显示的名称（快捷方式、窗口标题）仍是「DeepSeek Harness」。
 - **首次构建需要联网**，要下载 Electron、便携 Node 与 `@deepseek-ai/dsh`（合计约 700 MB）。
 

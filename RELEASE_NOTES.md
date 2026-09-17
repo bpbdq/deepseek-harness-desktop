@@ -1,29 +1,28 @@
-# 1.2.9
+# 1.2.10
 
-本次纳入社区贡献的界面字号控制，并放宽客户端的请求头上限。
+本次不再随 Release 发布 Windows 的 `.msi`。
 
-## 新增
+## 变更
 
-- **界面字号控制。** 设置里新增字号调节，对话区域的字体大小可以与界面其余部分分开设置。（感谢 [@bpbdq](https://github.com/bpbdq) 的贡献。）
+- **Release 不再附带 `.msi`。** 它此前一直随每个版本发布，但价值与代价不成比例：
 
-## 修复
+  * **安装界面只有英文**——electron-builder 的 MsiTarget 不提供语言选项，其 WiX 工具链只含 `WixUIExtension.dll`、不含本地化 `.wxl` 文件；中文 MSI 需要自建 WiX UI 扩展。
+  * **构建需要很短的路径根**——这份应用的运行时树很深（`@opentelemetry` 等），WiX 的 `light.exe` 受 `MAX_PATH`(260) 限制，CI 的构建路径正好越线，必须绕 junction 才能生成，而越线时的报错是 `LGHT0103`「找不到文件」，完全看不出是路径长度问题。
 
-- **放宽客户端的请求头上限。** 客户端请求合并 bundle 时，会把**所有**插件的 `client.js` 路径串成一个查询串：
+  Windows 只保留 `dsh-desktop-x64.exe`（NSIS 安装程序，中文界面）。
+
+- MSI 目标**仍然保留**在 `electron-builder.yml` 里，需要时可在本地生成：
 
   ```
-  /plugins/??@deepseek-ai/dsh-api-gateway/client.js,@deepseek-ai/…&v=…
+  npx electron-builder --win msi --x64
   ```
-
-  约 50 个官方插件已让这条 URL 达到 2.6 KB，桌面版再叠加内置插件就越过了请求头上限，表现为界面显示 `Failed to load plugins` 而完全无法使用。现给服务端显式放宽上限。
-
-  > **这只缓解症状。** 根因是"把清单放进请求头"这一设计——上游 `dsh-client-modules` 里本有 `MAX_COMBO_URL_BYTES = 3KB` 的分区保护，却仍未能避开该限制。彻底修复需要把清单移到请求体或服务端缓存。
 
 ## 说明
 
-- 1.2.8 曾把社区贡献的 typography 插件回退，理由是"它导致界面加载失败"。**该判断是错的**——它只是让上述 URL 越限的最后一个插件。本版已恢复该插件，插件列表与上游一致。
+- 此前各版本的 Release 里已经上传的 `.msi` 附件**已一并清理**（共 27 个，覆盖 v1.0.1 起的全部历史版本），只删附件，不动标签与其它产物。
+- 中英文 README 的下载表、安装界面语言、可构建性、打包命令与已知限制各节都已同步更新。
 
 ## 校验
 
-- 本机实测：安装 1.2.7 后应用可正常启动并使用。
-- 新增三个排查脚本并已提交：`probe-bundle-request.mjs`（直接请求 bundle URL，复现 431）、`probe-431-threshold.mjs`（逐段截短以测阈值）、`check-installer-integrity.mjs`（比对安装包与发布产物的 sha256）。
-- 修正 `cdp-eval.mjs` 一处会误导排查的缺陷：它原先按页面标题查找，而**界面加载失败时标题会变成请求 URL**，于是报"找不到页面"，把真正的问题掩盖成脚本问题。
+- 工作流 YAML 校验通过：Windows 作业名改为「Windows (setup.exe)」，已无 MSI 构建步骤，产物收集与存在性检查也不再匹配 `*.msi`。
+- 各 Release 现在均为 **10 个附件**且不含 `.msi`。

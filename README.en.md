@@ -115,7 +115,6 @@ Grab the file for your platform from [Releases](../../releases).
 | Platform | File |
 |---|---|
 | Windows | `dsh-desktop-x64.exe` — NSIS installer, **Chinese UI** |
-| Windows | `dsh-desktop-x64.msi` — managed deployment / group policy |
 | Linux | `dsh-desktop-x86_64.AppImage` — no install, `chmod +x` and run |
 | Linux | `dsh-desktop-amd64.deb` |
 | macOS | `dsh-desktop-x64.dmg` (Intel) |
@@ -176,7 +175,6 @@ installer UI to localize:
 | Platform | Installer | Language |
 |---|---|---|
 | Windows `setup.exe` | NSIS wizard | **Simplified Chinese** |
-| Windows `.msi` | Windows Installer wizard | English (see below) |
 | Linux `.deb` / `.rpm` / AppImage | none — `dpkg -i`, or run directly | n/a |
 | macOS `.dmg` | none — drag to Applications | n/a |
 
@@ -189,9 +187,11 @@ nsis:
   installerLanguages: [zh_CN]  # language name, mapped to NSIS's SimpChinese
 ```
 
-The MSI remains English: electron-builder's MsiTarget exposes no language option,
-and the WiX toolchain it fetches ships `WixUIExtension.dll` without any localized
-`.wxl` files. A Chinese MSI would need a custom WiX UI extension; not implemented.
+> The Windows `.msi` is **no longer published**. Its installer UI is English only —
+> MsiTarget exposes no language option, and the WiX toolchain it fetches ships
+> `WixUIExtension.dll` without any localized `.wxl` files — and building it requires a
+> very short path root (WiX is bound by `MAX_PATH`). The target is still available for
+> local use: `npx electron-builder --win msi --x64`.
 
 > That is the **installer** language. The installed app's own UI is a separate
 > mechanism — it follows the system language (Chinese/English) and is controlled by
@@ -279,14 +279,14 @@ Node 20+ and npm are needed on the **build machine only**.
 npm install
 npm run stage      # stage the dsh runtime and the pinned Node
 npm run icon       # generate build/icon.png (replace with real branding)
-npm run dist:win   # Windows: setup.exe + .msi
+npm run dist:win   # Windows: setup.exe
 ```
 
 Or use the batch wrappers on Windows:
 
 ```bat
-build.bat          Windows (setup.exe + .msi)
-build.bat msi      only the .msi
+build.bat          Windows (setup.exe)
+build.bat msi      only the .msi (local, on demand; not published with releases)
 build.bat linux    prints why Linux cannot be built on Windows
 build.bat mac      prints why macOS cannot be built on Windows
 build.bat clean    wipe dist and the current version dir, then a full Windows build
@@ -300,9 +300,7 @@ One directory per version, and **no version number in the file names**:
 ```
 release/
   1.0.0/
-    DeepSeek Harness-x64.exe          <- NSIS installer
-    DeepSeek Harness-x64.exe.blockmap
-    DeepSeek Harness-x64.msi
+    dsh-desktop-x64.exe               <- NSIS installer
     latest.yml                        <- electron-updater metadata
   1.0.1/
     ...
@@ -320,7 +318,7 @@ that is the point of splitting them.
 | Target | Buildable on Windows | Why |
 |---|---|---|
 | `setup.exe` (NSIS) | ✅ | |
-| `.msi` | ✅ | needs WiX; electron-builder fetches it automatically |
+| `.msi` | ✅ | needs WiX (fetched automatically); local use only — not published with releases |
 | `.AppImage` | ❌ | needs the Linux `mksquashfs`; fails with `appimage-12.0.1/linux-x64/mksquashfs: file does not exist` |
 | `.deb` / `.rpm` | ❌ | needs `fpm`; fails with `fpm: executable file not found in %PATH%` |
 | `.dmg` / `.zip` (macOS) | ❌ | needs `hdiutil` / `codesign` / `productbuild`, which exist only on macOS |

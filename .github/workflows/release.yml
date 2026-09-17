@@ -3,7 +3,7 @@ name: release
 # 三个平台各用自己的 runner 打包，因为产物必须在目标平台上生成：
 #   * macOS 的 .dmg 需要 hdiutil / codesign / productbuild，只在 macOS 上存在
 #   * Linux 的 .rpm 需要 rpmbuild 工具链
-#   * Windows 的 .msi 需要 WiX
+#   * Windows 的 .exe（NSIS）需要 makensis
 #
 # 触发方式：
 #   * 推送 v* 标签            -> 打包并创建 GitHub Release
@@ -36,7 +36,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: Windows (setup.exe + msi)
+          - name: Windows (setup.exe)
             os: windows-latest
             target: win
           - name: Linux (AppImage + deb + rpm)
@@ -154,32 +154,17 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: 打包 Windows (MSI)
-        if: matrix.target == 'win'
-        # MSI 必须从一个**很短的构建根**里生成。
-        #
-        # 原因：WiX 的 light.exe 受 Windows MAX_PATH(260) 限制，而运行时树里
-        # @opentelemetry 嵌套很深。实测最长路径：
-        #     D:\a\deepseek-harness-desktop\deepseek-harness-desktop\…  262 字符（越线 2）
-        #     F:\code\dshDesktop\…                                      226 字符（本地能过）
-        #     C:\b\…                                                    212 字符
-        # 越线时的报错是 LGHT0103「找不到文件」，完全看不出是路径长度问题——
-        # 上一轮 Windows MSI 就是这样失败的。用 junction 把构建根缩到 C:\b 后，
-        # Node 的 process.cwd() 会保留该短路径（已验证），因此无需复制整个工程。
-        shell: pwsh
-        run: |
-          $short = 'C:\b'
-          if (Test-Path $short) { cmd /c "rmdir `"$short`"" | Out-Null }
-          New-Item -ItemType Junction -Path $short -Target $env:GITHUB_WORKSPACE | Out-Null
-          Set-Location $short
-          node scripts/check-path-length.mjs runtime
-          npx.cmd electron-builder --win msi --x64 --publish never
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          # 产物落在 C:\b\release\<版本>\，而 release/ 就在 junction 目标下，
-          # 所以同一个文件在 $env:GITHUB_WORKSPACE\release\ 里也能看到，无需搬回。
-          Get-ChildItem "$short\release" -Recurse -File | Where-Object { $_.Extension -in '.msi', '.yml' } | Select-Object FullName
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # 说明：这里原本还有一个「打包 Windows (MSI)」步骤，现已移除。
+      #
+      # MSI 曾经的价值是企业批量部署（组策略），但要为此付出两个代价：
+      #   * 它必须从很短的构建根（C:\b）里生成，因为 WiX 的 light.exe 受 MAX_PATH
+      #     260 限制，而运行时树里 @opentelemetry 嵌套很深，CI 的路径长度正好越线；
+      #   * 它的安装界面只有英文——electron-builder 的 MsiTarget 不提供语言选项，
+      #     其 WiX 工具链不含本地化文件，中文 MSI 需要自建 WiX UI 扩展。
+      # 两相权衡后不再随 Release 发布。
+      #
+      # MSI 目标仍保留在 electron-builder.yml 里，需要时可在本地出：
+      #   npx electron-builder --win msi --x64
 
       # ------------------------------------------------------------------ Linux
       - name: 打包 Linux
@@ -276,7 +261,7 @@ jobs:
           # 联网自动更新才用得到，对下载安装包的用户没有意义，列在 Release 里纯属噪音。
           # 去掉它不影响 electron-updater——新版会退回全量下载那个安装包本身。
           find release -mindepth 2 -maxdepth 2 -type f \
-            \( -name '*.exe' -o -name '*.msi' -o -name '*.AppImage' -o -name '*.deb' \
+            \( -name '*.exe' -o -name '*.AppImage' -o -name '*.deb' \
                -o -name '*.rpm' -o -name '*.dmg' -o -name '*.zip' \
                -o -name 'latest*.yml' \) \
             -exec cp -v {} dist-artifacts/ \;
@@ -325,7 +310,7 @@ jobs:
       # 这种"成功但为空"的失败最难发现，所以在这里挡掉。
       - name: 确认产物存在
         run: |
-          count=$(find artifacts -type f \( -name '*.exe' -o -name '*.msi' -o -name '*.dmg' -o -name '*.zip' -o -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' -o -name 'latest*.yml' \) | wc -l)
+          count=$(find artifacts -type f \( -name '*.exe' -o -name '*.dmg' -o -name '*.zip' -o -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' -o -name 'latest*.yml' \) | wc -l)
           echo "找到 $count 个可发布文件"
           find artifacts -type f | head -40
           if [ "$count" -eq 0 ]; then
@@ -388,14 +373,16 @@ jobs:
 
             | 平台 | 文件 |
             |---|---|
-            | Windows | `dsh-desktop-x64.exe`（NSIS 安装程序，**中文界面**）、`.msi` |
+            | Windows | `dsh-desktop-x64.exe`（NSIS 安装程序，**中文界面**） |
             | Linux | `dsh-desktop-x86_64.AppImage`、`-amd64.deb` |
             | macOS | `dsh-desktop-x64.dmg`、`-arm64.dmg` 及对应 `.zip` |
 
             文件名里不带版本号，版本体现在 Release 标签上。
 
-            **Windows 安装界面为简体中文**；`.msi` 仍是英文（electron-builder 的
-            MsiTarget 不提供语言选项，其 WiX 工具链不含本地化文件）。
+            **Windows 安装界面为简体中文。** 不再附带 `.msi`：它的安装界面只有英文
+            （electron-builder 的 MsiTarget 不提供语言选项），且构建需要很短的路径根，
+            价值与代价不成比例。需要 MSI 时可在本地用
+            `npx electron-builder --win msi --x64` 生成。
 
             macOS 产物未签名（未配置 Apple 开发者证书），首次打开请右键 → 打开。
 

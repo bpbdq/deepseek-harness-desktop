@@ -73,13 +73,17 @@ asarUnpack:
 win:
   icon: build/icon.png
   target:
-    # 默认只出 NSIS。MSI 在 CI 里作为独立步骤追加（见 .github/workflows/release.yml）。
+    # 只出 NSIS。**MSI 不再随 Release 发布**（见 .github/workflows/release.yml 里的说明）。
     #
-    # 原因：这份应用的运行时树有约 25000 个文件 / 558 MB，WiX 的 light 链接器
-    # 要把每个文件编入 MSI 数据库，实测需要十几分钟；放在默认路径上会让每次
-    # 打包都变得很慢。MSI 本身对批量部署仍有价值，所以保留为按需目标：
-    #   build.bat msi        只出 .msi
-    #   npx electron-builder --win msi
+    # 不再发布的两个原因：
+    #   * 它的安装界面只有英文——MsiTarget 不提供语言选项，其 WiX 工具链不含本地化文件，
+    #     中文 MSI 需要自建 WiX UI 扩展；
+    #   * 构建需要很短的路径根。这份应用的运行时树很深（@opentelemetry 等），WiX 的
+    #     light.exe 受 MAX_PATH(260) 限制，CI 的构建路径正好越线，必须绕 junction，
+    #     而报错是 LGHT0103「找不到文件」，完全看不出是路径长度问题。
+    #
+    # 目标本身保留，需要时可在本地出（本地路径短，无需 Junction）：
+    #   npx electron-builder --win msi --x64
     - target: nsis
       arch: [x64]
   # 文件名不带版本号：版本已经在目录名里（release/${version}/）。
