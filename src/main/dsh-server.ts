@@ -138,6 +138,19 @@ export class DshServer extends EventEmitter {
       program,
       [
         resolveServerEntry(runtime),
+        // 放宽 HTTP 请求头上限。
+        //
+        // 客户端要按插件清单请求一个"合并后的 bundle"，做法是把**所有**插件的
+        // `client.js` 路径串成一个查询串：
+        //   /plugins/??@deepseek-ai/dsh-api-gateway/client.js,@deepseek-ai/…&v=…
+        // 官方插件约 50 个，整条 URL 会长到 2.5 KB 以上；再加上桌面版内置的三个插件，
+        // 就会超过 Node 的默认请求头上限而被拒绝（返回 431），表现为界面显示
+        // 「Failed to load plugins」而完全打不开。
+        //
+        // 这是桌面版特有的压力：官方 `dsh web` 不带这些额外插件，长度还在阈值内。
+        // 因此这里显式放宽到 1 MiB——请求头本来就不该用于承载这种规模的清单，但在
+        // 上游把清单挪到请求体或服务端缓存之前，这是让应用可用的必要让步。
+        '--max-http-header-size=1048576',
         '--dsh-home',
         dshHome,
         '--install-anchor',
