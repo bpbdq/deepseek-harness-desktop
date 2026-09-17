@@ -46,8 +46,8 @@ const check = (label, actual, expected) => {
 /** 精确定位审查概览入口。
  *
  * 不能用"文本含本轮"来匹配：分支徽章的文本也可能含同样的字，早先因此点错了按钮，
- * 而失败表现只是"点了没反应"，很难看出是点错了。这里用 title 精确匹配。 */
-const CHIP = `[...document.querySelectorAll('button')].find((el) => (el.getAttribute('title') || '') === '在侧边栏查看')`
+ * 而失败表现只是"点了没反应"，很难看出是点错了。这里用专用标记精确匹配。 */
+const CHIP = `document.querySelector('[data-desktop-review]')`
 
 /** 侧边栏是否可见：找右侧栏容器。 */
 const SIDEBAR_STATE = `
@@ -56,16 +56,21 @@ const SIDEBAR_STATE = `
     const titleNode = [...document.querySelectorAll('*')].find(
       (el) => el.children.length === 0 && (el.innerText || '').trim() === '本轮修改审查',
     );
-    // 标签栏里出现"本轮修改审查"即认为侧边栏已打开并激活了该标签。
+    // 收起时标签仍挂载，必须同时检查侧栏的展开状态。
+    const panel = titleNode?.closest('[data-sidebar-right-panel]');
     return JSON.stringify({
       chip: Boolean(chip),
       chipLabel: chip ? chip.innerText.trim() : null,
       tabTitle: Boolean(titleNode),
+      reviewVisible: Boolean(panel?.hasAttribute('data-sidebar-right-open')),
       hasBinaryNote: (document.body.innerText || '').includes('二进制'),
     });
   })()
 `
 
+// 从收起状态开始，让脚本可反复运行。
+await evaluate(`document.querySelector('[data-sidebar-right-open] [data-sidebar-right-toggle]')?.click()`)
+await wait(300)
 console.log('=== 打开前 ===')
 let state = JSON.parse(await evaluate(SIDEBAR_STATE))
 console.log(`  ${JSON.stringify(state)}`)
@@ -87,10 +92,11 @@ await wait(2500)
 state = JSON.parse(await evaluate(SIDEBAR_STATE))
 console.log(`  ${JSON.stringify(state)}`)
 check('侧边栏出现了审查标签', state.tabTitle, 'true')
+check('审查面板已展开', state.reviewVisible, 'true')
 
-// 再点一次：应当聚焦既有标签而不是报错（openTab 的语义）。
+// 再点一次收起，第三次重新打开同一审查面板。
 console.log('')
-console.log('=== 再点一次（应仍然正常）===')
+console.log('=== 再点一次（应收起）===')
 await evaluate(`
   (() => {
     const chip = ${CHIP};
@@ -100,7 +106,12 @@ await evaluate(`
 `)
 await wait(1500)
 state = JSON.parse(await evaluate(SIDEBAR_STATE))
-check('标签仍然存在（未报错）', state.tabTitle, 'true')
+check('再次点击收起审查面板', state.reviewVisible, 'false')
+check('收起保留审查标签', state.tabTitle, 'true')
+await evaluate(`${CHIP}?.click()`)
+await wait(1500)
+state = JSON.parse(await evaluate(SIDEBAR_STATE))
+check('第三次点击重新打开审查面板', state.reviewVisible, 'true')
 
 // 标签正文应显示内容（本仓库有改动；若恰好干净则应显示"没有改动"）。
 const body = await evaluate(`
