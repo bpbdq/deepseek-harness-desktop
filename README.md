@@ -391,9 +391,12 @@ npm start             # 启动（需已 stage）
 ### 开发期运行
 
 ```bash
-npm run dev           # 编译后启动
-npm start             # 不编译直接启动（改完源码需先 build）
+npm run dev           # 同步本地插件、编译后启动
+npm start             # 同步本地插件后直接启动（改完 TypeScript 需先 build）
+npm run sync:plugins  # 单独把 plugins/ 更新到 runtime/node_modules/
 ```
+
+开发启动会刷新随桌面端维护的插件副本，清除这些插件中已删除的旧文件，避免修改了 `plugins/` 却继续运行旧代码。同步使用本地文件，不会下载或升级官方运行时；首次运行仍需先完成 `npm run stage`。
 
 Windows 上推荐用仓库自带的 `run-dev.bat`：它在**独立的可见窗口**里启动，便于看到 stdout/stderr，也避免被沙箱的 Job 对象回收。
 
