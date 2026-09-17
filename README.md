@@ -158,7 +158,7 @@ macOS 产物**未签名**（发布流程未配置 Apple 开发者证书），Gat
 之后就能正常双击启动了。如果提示「已损坏」，执行一次：
 
 ```bash
-xattr -dr com.apple.quarantine "/Applications/dsh-desktop.app"
+xattr -dr com.apple.quarantine "/Applications/DeepSeek Harness.app"
 ```
 
 ### 首次启动
@@ -227,23 +227,33 @@ nsis:
 
 当前工作区的分支还会显示在**窗口标题栏**上，例如 `DeepSeek Harness — master*`。
 
-### 输入框工具栏的两个入口
+### 输入框上方的工具条
 
-输入框工具栏右侧（模型选择器左侧）由两个内置插件提供：
+输入框**上方**有一整行工具条，由两个内置插件共用：**左侧是分支徽章，右侧是本轮改动入口**。它和输入卡片视觉上连成一体——背景延伸到卡片后面、圆角也用同一个 22px，所以交接处不会露出底色。分支名过长时自动省略。
+
+> 这两个入口原先挤在输入框工具栏的右侧（发送按钮左边），分支名一长就被压缩变形。之所以不能直接放到上方，是因为扩展点选错了：`conversation.composer.bar` 就是**输入框本体**——往那里注册会顶掉官方注册，表现为界面报 `Failed to load plugins`，甚至**输入框直接消失**。
+>
+> 现在改由 gitbar 在 `conversation.input.dock` 注册整行，并在其中提供一个会话级子槽 `dsh.desktop.composer.actions` 给审查插件，两个插件因此能平铺在同一排、互不挤压。
 
 **分支徽章**（`dsh-client-ui-gitbar`）
 
-- 显示当前分支、未提交改动数、领先/落后
-- 点击展开分支列表：**本地在前、远程在后**，远程条目带 `R` 标记；切换远程分支时 git 会自动创建同名跟踪分支
+- 显示当前分支、未提交改动数、领先/落后（`master*  ↑2 ↓1`）
+- 点击展开分支切换菜单，菜单顶部是**搜索框**：打开即聚焦并清空，输入即时过滤
+- 分支多时先显示「正在加载分支…」；搜索无结果时说「没有匹配的分支」，与「没有分支」区分开
+- 列表**本地在前、远程在后**，远程条目标注「远程」，当前分支带对勾；切换远程分支时 git 会自动创建同名跟踪分支
+- 菜单按视口高度自动决定向上还是向下弹出，宽度与位置都限制在窗口内；滚动只作用于结果列表，搜索框始终留在顶部
 - 若工作区有未提交改动会被覆盖，git 会拒绝切换——此时**保持菜单打开并显示 git 的原始报错**，并给出「暂存改动并切换到 X」按钮（stash 是可恢复的，本插件不会替你丢弃改动）
-- 点击菜单外部或按 `Esc` 关闭
+- 点击菜单外部或按 `Esc` 关闭，`Esc` 之后焦点回到徽章按钮
 
 **本轮改动审查**（`dsh-client-ui-review`）
 
-- 显示本轮任务改动的文件数，点击展开面板
+- 显示本轮任务改动的文件数，点击在右侧栏打开审查面板
+- **再点一次收起侧栏，第三次重新打开**；收起会保留标签与已展开的差异，便于来回对照
 - 列出每个变更文件的状态（新增 / 修改 / 删除 / 重命名）与增删行数
 - 逐文件展开统一差异，带增删行着色
 - 基线的取法是关键：**一轮对话开始时**为工作区拍一张 git 快照，本轮改动相对它计算。因此即使你在本轮开始前就有未提交改动，那些也**不会**被算进本轮
+
+两个入口都带无障碍标注（`aria-label`、`aria-expanded`、`aria-haspopup`），可用键盘操作并有可见的焦点环。
 
 ### 托盘
 
@@ -264,7 +274,7 @@ Electron 主进程                                 dsh 服务端子进程
 ┌──────────────────────────────┐               ┌─────────────────────────────┐
 │ 窗口 / 菜单 / 托盘            │               │ 官方 @deepseek-ai/dsh        │
 │ 原生目录选择器                │               │ + dsh-base / dsh-web-app     │
-│ 运行时解析与解包              │  spawn        │ + 本项目的两个内置插件        │
+│ 运行时解析与解包              │  spawn        │ + 本项目的三个内置插件        │
 │ 运行时更新（npm）             │ ────────────► │                             │
 │ 外壳更新（electron-updater）  │               │ 监听 127.0.0.1:<随机端口>     │
 │ 凭据（系统密钥链）            │ ◄──────────── │ 打印 dsh web: <url>?token=   │
@@ -314,12 +324,12 @@ app.asar
 
 ### 内置插件如何接线
 
-两个插件（gitbar、review）都是标准 `dsh` 插件，走**官方插件机制**，不是外壳 hack：
+三个插件（gitbar、review、typography）都是标准 `dsh` 插件，走**官方插件机制**，不是外壳 hack：
 
 - 它们的 `package.json` 声明 `dsh.bundle.patch`（使其可作为 profile bundle 挂载）与 `dsh.client`（使其客户端半边进入模块图）
 - `scripts/stage-runtime.mjs` 把它们复制进 `runtime/node_modules/`
 - 应用启动时 `src/server/server.mjs` 把它们**链接进 profile 的 `node_modules`** 并**登记为 profile bundle**
-- `dsh` 装载它们：host 半边注册 HTTP 路由，client 半边注册到输入框工具栏的槽位
+- `dsh` 装载它们：host 半边注册 HTTP 路由，client 半边注册到界面槽位（见 [输入框上方的工具条](#输入框上方的工具条)）
 
 因此它们与官方插件在机制上完全平等，`dsh` 升级不会因为它们不是官方包而失效。
 
@@ -456,7 +466,7 @@ set ELECTRON_BUILDER_BINARIES_MIRROR=https://registry.npmmirror.com/-/binary/ele
 
 ### 开发新插件
 
-两个内置插件是本仓库最好的范例，照它们的结构新增一个即可：
+三个内置插件是本仓库最好的范例，照它们的结构新增一个即可：
 
 ```
 plugins/dsh-client-ui-<名字>/
@@ -466,11 +476,12 @@ plugins/dsh-client-ui-<名字>/
   lib/client.js         # client 半边（注册界面）
 ```
 
-三个必须注意的点（都是实际踩过的）：
+四个必须注意的点（都是实际踩过的）：
 
 1. **`cordis.patch.yml` 里新增行必须包在 `- insert:` 之下。** 写成顶层会被当作"按 id 覆盖既有行"，而该 id 不存在，于是既不报错也不生效。
 2. **客户端半边的 `exports.inject` 必须声明 `['slots', 'locale']`。** 漏了会抛 `cannot get property "slots" without inject`，而且这个错误会让**整个界面白屏**，不只是你的插件。
 3. **`package.json` 必须同时声明 `dsh.bundle.patch` 与 `dsh.client`**，否则 dsh 在装载阶段直接报错。
+4. **先确认槽位的 `kind` 再往里注册。** `single` 槽（例如 `conversation.composer.bar`，它就是输入框本体）被第三方抢先注册会顶掉官方内容，表现为界面报 `Failed to load plugins` 或控件整个消失。要往那一排加东西，应当由别人的 `list`/`session` 槽提供一个子槽——本仓库的 `dsh.desktop.composer.actions` 就是这么来的。`scripts/list-slots.mjs` 与 `scripts/list-slot-kinds.mjs` 可以列出实际槽位及其种类。
 
 新插件写好后，把它加进 `src/server/server.mjs` 的 `BUNDLED_PLUGINS` 数组，它就会在启动时自动链接进 profile 并登记为 bundle。
 
@@ -486,8 +497,11 @@ node scripts/test-unpack.mjs       # 运行时解包（含进度取值、归档�
 node scripts/test-gitbar-checkout.mjs    # 分支切换（一次性临时仓库）
 node scripts/test-gitbar-workspace.mjs   # 插件按请求的工作区查询
 node scripts/test-review-host.mjs        # 审查插件的快照与差异
+node scripts/test-review-sidebar.mjs     # 审查侧栏链路：打开 / 收起 / 重新打开
 node scripts/check-plugin-i18n.mjs       # 插件里没有硬编码文案
 ```
+
+> 其中 `test-review-sidebar.mjs`、`test-ui-typography.cjs` 这类会启动 Electron 并从 CDP 驱动界面的脚本，需要图形环境；在受限沙箱里 Electron 起不来，应放到本机桌面会话中运行。
 
 > 会移动工作区状态的测试（分支切换、审查）一律使用**一次性临时仓库**——绝不能拿真实仓库当试验场。
 
@@ -609,8 +623,9 @@ src/
   server/server.mjs             服务端启动脚本（在 dsh 的 Node 里运行）
 
 plugins/
-  dsh-client-ui-gitbar/         分支徽章与切换
+  dsh-client-ui-gitbar/         输入框上方工具条：分支徽章与切换
   dsh-client-ui-review/         本轮修改审查
+  dsh-client-ui-typography/     界面字号控制
 
 scripts/                        构建、打包、发布与诊断工具（见上）
 

@@ -53,6 +53,8 @@ Added by the shell:
 - Credentials encrypted with the OS keychain (DPAPI / Keychain / libsecret)
 - A separate harness home, so a command-line `dsh` install can coexist untouched
 - Native directory picker, native menus, single instance, external links to the real browser
+- **A toolbar above the composer**: a branch chip with a searchable switcher, and a
+  turn-changes entry that opens a collapsible review sidebar
 
 ---
 
@@ -175,7 +177,7 @@ installer UI to localize:
 | Platform | Installer | Language |
 |---|---|---|
 | Windows `setup.exe` | NSIS wizard | **Simplified Chinese** |
-| Linux `.deb` / `.rpm` / AppImage | none — `dpkg -i`, or run directly | n/a |
+| Linux `.deb` / AppImage | none — `dpkg -i`, or run directly | n/a |
 | macOS `.dmg` | none — drag to Applications | n/a |
 
 The NSIS installer is pinned to Simplified Chinese via two options in
@@ -199,6 +201,57 @@ nsis:
 
 On first launch the app asks for an API key. It is encrypted with the OS keychain
 into this app's own data directory — never written as plaintext.
+
+---
+
+## Composer controls
+
+A single toolbar sits **above the composer**, shared by two bundled plugins: the
+**branch chip on the left**, the **turn-changes entry on the right**. It joins the
+composer card visually — the background extends behind the card and reuses the same
+22px corner radius, so no seam shows at the junction. Long branch names are truncated.
+
+> Both controls used to be squeezed into the right-hand end of the composer toolbar
+> (left of the send button), where a long branch name deformed the layout. They could
+> not simply move up, because the obvious slot was the wrong one:
+> `conversation.composer.bar` **is the composer itself** — registering there displaces
+> the official registration, which surfaces as `Failed to load plugins` or makes the
+> **composer disappear entirely**.
+>
+> gitbar now registers the whole row at `conversation.input.dock` and exposes a
+> session-scoped child slot, `dsh.desktop.composer.actions`, for the review plugin, so
+> both sit side by side without crowding each other.
+
+**Branch chip** (`dsh-client-ui-gitbar`)
+
+- Shows the current branch, the uncommitted change count, and ahead/behind (`master*  ↑2 ↓1`)
+- Click to open the branch switcher; a **search box** sits at the top — focused and
+  cleared on open, filtering as you type
+- Shows "Loading branches…" while the list is fetched, and distinguishes
+  "No matching branches" from "no branches at all"
+- The list puts **local branches first, remotes after**, tags remote entries, marks the
+  current branch with a checkmark; switching to a remote branch creates the matching
+  tracking branch automatically
+- The menu flips above or below depending on viewport height, and its width and position
+  stay inside the window; only the result list scrolls, the search box stays pinned
+- If uncommitted changes would be overwritten, git refuses the switch — the menu **stays
+  open and shows git's own error**, plus a "Stash changes and switch to X" button (a
+  stash is recoverable; the plugin never discards your work for you)
+- Closes on an outside click or `Esc`; after `Esc`, focus returns to the chip button
+
+**Turn-changes review** (`dsh-client-ui-review`)
+
+- Shows how many files this turn changed; click to open the review panel in the right sidebar
+- **A second click collapses the sidebar, a third reopens it**; collapsing keeps the tab
+  and any expanded diffs so you can compare back and forth
+- Lists each changed file with its status (added / modified / deleted / renamed) and line counts
+- Expands per-file unified diffs with added/removed coloring
+- The baseline is the load-bearing detail: a git snapshot is taken **when a turn starts**,
+  and the turn's changes are computed against it — so uncommitted work that predates the
+  turn is **not** attributed to it
+
+Both controls are labelled for assistive tech (`aria-label`, `aria-expanded`,
+`aria-haspopup`), operable from the keyboard, and show a visible focus ring.
 
 ---
 
@@ -320,7 +373,8 @@ that is the point of splitting them.
 | `setup.exe` (NSIS) | ✅ | |
 | `.msi` | ✅ | needs WiX (fetched automatically); local use only — not published with releases |
 | `.AppImage` | ❌ | needs the Linux `mksquashfs`; fails with `appimage-12.0.1/linux-x64/mksquashfs: file does not exist` |
-| `.deb` / `.rpm` | ❌ | needs `fpm`; fails with `fpm: executable file not found in %PATH%` |
+| `.deb` | ❌ | needs `fpm`; fails with `fpm: executable file not found in %PATH%` |
+| `.rpm` | — | not a publish target: no `rpmbuild` locally or in CI, so no `.rpm` is produced |
 | `.dmg` / `.zip` (macOS) | ❌ | needs `hdiutil` / `codesign` / `productbuild`, which exist only on macOS |
 
 **Linux and macOS artifacts cannot be produced on Windows** — missing toolchain,
@@ -443,11 +497,15 @@ Unsigned builds work fine but trigger SmartScreen (Windows) and Gatekeeper (macO
 | `src/main/credentials.ts` | `safeStorage`-backed sealed credential store |
 | `src/main/tray.ts` | tray menu and close-to-tray |
 | `src/server/server.mjs` | the boot chain, run by the child process |
+| `plugins/dsh-client-ui-gitbar/` | composer toolbar: branch chip and switching |
+| `plugins/dsh-client-ui-review/` | per-turn change review |
+| `plugins/dsh-client-ui-typography/` | UI font-size control |
 | `scripts/build.mjs` | packaging orchestration (the `.bat` files only forward) |
 | `scripts/version.mjs` | version management |
+| `scripts/release.mjs` | bump, commit, tag, push — with consistency gates |
 | `scripts/stage-runtime.mjs` | stages `@deepseek-ai/dsh` into `runtime/` |
 | `scripts/stage-node.mjs` | downloads and checksum-verifies the pinned Node |
-| `build.bat` / `version.bat` | one-command packaging / versioning |
+| `build.bat` / `version.bat` / `release.bat` | one-command packaging / versioning / release |
 
 ### Diagnostic scripts
 
@@ -457,11 +515,20 @@ was verified rather than assumed:
 | Script | Purpose |
 |---|---|
 | `scripts/test-i18n.cjs` | asserts the locale mapping and catalog key parity |
+| `scripts/check-imports.mjs` | every relative import resolves, catching "file not committed" |
+| `scripts/check-version.mjs` | `package.json`, the lockfile, and `packages[""]` all agree |
+| `scripts/test-review-host.mjs` | review-plugin snapshots and diffs (throwaway temp repo) |
+| `scripts/test-gitbar-checkout.mjs` | branch switching (throwaway temp repo) |
 | `scripts/probe-web.mjs` | boots the runtime headlessly and reports the URL it serves |
 | `scripts/probe-ui.mjs` | drives the live UI over CDP: dump controls, click, evaluate |
+| `scripts/list-slots.mjs`, `scripts/list-slot-kinds.mjs` | enumerate UI extension slots and their kinds |
 | `scripts/probe-locale.cjs` | prints what the Electron locale APIs report |
 | `scripts/probe-tray.cjs` | verifies the tray icon loads and a `Tray` constructs |
 | `scripts/capture-window.cjs` | screenshots the window, to verify layout claims |
+| `scripts/ci-status.mjs`, `scripts/ci-logs.mjs` | query GitHub Actions runs and logs |
+
+> Tests that start Electron and drive the UI over CDP — `test-review-sidebar.mjs`,
+> `test-ui-typography.cjs` — need a graphical session; they cannot run in a restricted sandbox.
 
 ---
 
