@@ -92,7 +92,7 @@ official package is lacking anything.
 | **Copy workspace path** | straight to the clipboard, ready to paste into a terminal |
 | **Project info panel** | workspace path, git branch and change count, runtime version and source, bundled Node and Electron versions, harness home |
 | **Per-turn change review** | after a turn finishes, see every file that turn changed, with unified diffs |
-| **Branch badge and switching** | current branch in the composer toolbar; click to switch to a local or remote branch |
+| **Branch badge and switching** | branch and turn changes above the composer, with long branch names truncated; click to switch to a local or remote branch |
 
 ### Updates
 

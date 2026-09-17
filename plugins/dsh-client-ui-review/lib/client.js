@@ -22,23 +22,41 @@ window.__ModuleLoader__.load({
     Object.defineProperty(exports, Symbol.toStringTag, { value: 'Module' })
 
     const react = require('react')
+    const UI_FONT = 'var(--dsw-font-family, "Segoe UI", "Microsoft YaHei", sans-serif)'
+    const CODE_FONT = 'var(--ds-font-family-code, Consolas, "Microsoft YaHei", monospace)'
+    const ACCENT = 'var(--dsw-alias-state-business-primary, #4d6bfe)'
+    const ADDED = 'var(--dsw-alias-state-success-primary, #16834a)'
+    const REMOVED = 'var(--dsw-alias-state-error-primary, #d44747)'
+    const styles = `
+      [data-desktop-review-surface] button:focus-visible, [data-desktop-review]:focus-visible,
+      [data-review-trigger] > button:focus-visible {
+        outline: 2px solid ${ACCENT}; outline-offset: 2px;
+      }
+      [data-desktop-review], [data-review-trigger] > button {
+        transition: background-color .15s ease, border-color .15s ease;
+      }
+      [data-desktop-review]:hover, [data-review-trigger] > button:hover {
+        --dsh-review-chip-bg: color-mix(in srgb, ${ACCENT} 5%, var(--dsw-alias-bg-base, #fff));
+      }
+      [data-desktop-review]:active, [data-review-trigger] > button:active {
+        --dsh-review-chip-bg: color-mix(in srgb, ${ACCENT} 9%, var(--dsw-alias-bg-base, #fff));
+      }
+      .dsh-review-file:hover, .dsh-review-revert:hover:not(:disabled) {
+        --dsh-review-row-bg: var(--dsw-alias-interactive-bg-hover);
+        --dsh-review-row-border: var(--dsw-alias-border-l2);
+      }
+      .dsh-review-history + .dsh-review-history {
+        border-top: 1px solid var(--dsw-alias-border-l1, #eceef2);
+      }
+    `
 
     /** 稳定插件名，用于诊断。 */
     const name = 'dsh-client-ui-review'
 
-    /** 概览入口所在的槽位。
-     *
-     * 留在下方工具栏（`conversation.input.right`，list 槽）。
-     *
-     * 试过把它放到输入框**上方**那一排（`conversation.composer.bar`），两次都失败，
-     * 而且第二次更严重——那个槽位就是**输入框本体**：
-     *   1. 不带优先级直接注册 -> 该槽是 single 类型，官方注册失败，界面显示
-     *      "Failed to load plugins"，整个会话界面加载不出来；
-     *   2. 带显式负优先级遮蔽 -> 官方注册被顶掉，**输入框消失**（实测 DOM 里
-     *      contenteditable 与 textarea 都不存在）。
-     * 结论：那一排不提供扩展点，第三方无法在不破坏输入框的前提下插入控件。
+    /** gitbar 在 conversation.input.dock 提供的工具条子槽（list / session）。
+     * conversation.composer.bar 是官方输入框本体，不能用它放置上方工具条。
      */
-    const CHIP_SLOT = 'conversation.input.right'
+    const CHIP_SLOT = 'dsh.desktop.composer.actions'
 
     /** 项目级入口所在的槽位。
      *
@@ -83,6 +101,7 @@ window.__ModuleLoader__.load({
 
     const zh = {
       idle: '本轮暂无改动',
+      turnFiles: '本轮修改 {count}',
       files: '{count} 个文件',
       title: '本轮修改审查',
       summary: '{files} 个文件，+{added} −{removed}',
@@ -117,6 +136,7 @@ window.__ModuleLoader__.load({
 
     const en = {
       idle: 'No changes this turn',
+      turnFiles: 'Changes {count}',
       files: '{count} files',
       title: 'Turn changes',
       summary: '{files} files, +{added} −{removed}',
@@ -153,7 +173,7 @@ window.__ModuleLoader__.load({
     const STATUS_KEYS = { A: 'statusAdded', M: 'statusModified', D: 'statusDeleted', R: 'statusRenamed' }
 
     /** 状态字母对应的颜色，让列表一眼能分辨增删改。 */
-    const STATUS_COLORS = { A: '#8fd6a4', M: '#e0c98f', D: '#e0a0a0', R: '#9db8e8' }
+    const STATUS_COLORS = { A: ADDED, M: 'var(--dsw-alias-state-warn-label, #9a6700)', D: REMOVED, R: ACCENT }
 
     /**
      * 常驻面板开关的持久化状态。
@@ -579,36 +599,34 @@ window.__ModuleLoader__.load({
       }
       return react.createElement(
         'div',
-        { style: { display: 'flex', flexDirection: 'column', gap: '4px' } },
+        { style: { display: 'flex', flexDirection: 'column' } },
         commits.map((commit) =>
           react.createElement(
             'div',
             {
               key: commit.hash,
+              className: 'dsh-review-history',
               title: `${commit.hash}\n${commit.author} · ${commit.date}`,
               style: {
                 display: 'flex',
-                gap: '8px',
-                alignItems: 'baseline',
-                fontSize: '11.5px',
-                fontFamily: 'ui-monospace, Consolas, monospace',
-                lineHeight: '1.5',
+                flexDirection: 'column',
+                gap: '5px',
+                padding: '10px 2px',
+                fontSize: '13px',
+                fontFamily: UI_FONT,
+                lineHeight: '1.6',
               },
             },
             react.createElement(
               'span',
-              { style: { color: '#9db8e8', flex: '0 0 auto' } },
-              commit.short,
-            ),
-            react.createElement(
-              'span',
-              { style: { color: 'var(--dsw-alias-label-tertiary)', flex: '0 0 auto' } },
-              commit.date,
-            ),
-            react.createElement(
-              'span',
-              { style: { color: 'var(--dsw-alias-label-primary)', minWidth: 0, wordBreak: 'break-word' } },
+              { style: { color: 'var(--dsw-alias-label-primary)', minWidth: 0, overflowWrap: 'anywhere' } },
               commit.subject,
+            ),
+            react.createElement(
+              'div',
+              { style: { display: 'flex', flexWrap: 'wrap', gap: '10px', fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)' } },
+              react.createElement('span', { style: { color: ACCENT, fontFamily: CODE_FONT } }, commit.short),
+              react.createElement('span', { style: { fontVariantNumeric: 'tabular-nums' } }, commit.date),
             ),
           ),
         ),
@@ -677,6 +695,8 @@ window.__ModuleLoader__.load({
         'aside',
         {
           ref: rootRef,
+          'data-desktop-review-surface': 'panel',
+          'aria-label': title,
           style: {
             // 右侧全高抽屉，而不是浮在入口下方的小面板。
             //
@@ -693,9 +713,10 @@ window.__ModuleLoader__.load({
             display: 'flex',
             flexDirection: 'column',
             borderLeft: '1px solid var(--dsw-alias-border-l2, #3d3d45)',
-            background: 'var(--dsw-alias-bg-overlay, #1f1f24)',
+            background: 'var(--dsw-alias-bg-base, #fff)',
             color: 'var(--dsw-alias-label-primary)',
-            boxShadow: '-8px 0 32px rgba(0,0,0,.35)',
+            fontFamily: UI_FONT,
+            boxShadow: '-12px 0 36px rgba(0,0,0,.10)',
             overflow: 'hidden',
           },
         },
@@ -706,14 +727,15 @@ window.__ModuleLoader__.load({
               display: 'flex',
               alignItems: 'center',
               gap: '10px',
-              padding: '9px 12px',
+              padding: '16px 18px',
+              background: 'var(--dsw-alias-bg-module-platform, #f5f6f7)',
               borderBottom: '1px solid var(--dsw-alias-border-l1, #2f2f36)',
-              fontSize: '12.5px',
+              fontSize: '14px',
               color: 'var(--dsw-alias-label-primary)',
             },
           },
-          react.createElement('strong', null, title),
-          react.createElement('span', { style: { color: 'var(--dsw-alias-label-tertiary)' } }, t('files', { count: files.length })),
+          react.createElement('strong', { style: { fontWeight: 600 } }, title),
+          react.createElement('span', { style: { color: 'var(--dsw-alias-label-secondary)', fontSize: '12px' } }, t('files', { count: files.length })),
           react.createElement('span', { style: { flex: 1 } }),
           react.createElement(
             'button',
@@ -727,8 +749,9 @@ window.__ModuleLoader__.load({
                 background: 'var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-layer-2, #2a2a31))',
                 color: 'var(--dsw-alias-label-primary)',
                 borderRadius: '6px',
-                width: '24px',
-                height: '24px',
+                width: '28px',
+                height: '28px',
+                fontFamily: UI_FONT,
                 cursor: 'pointer',
                 lineHeight: 1,
               },
@@ -757,6 +780,7 @@ window.__ModuleLoader__.load({
                     background: 'var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-layer-2, #26262c))',
                     color: 'var(--dsw-alias-label-primary)',
                     fontSize: '12px',
+                    fontFamily: UI_FONT,
                   },
                 },
                 options.map((option) =>
@@ -767,7 +791,7 @@ window.__ModuleLoader__.load({
           : null,
         react.createElement(
           'div',
-          { style: { overflowY: 'auto', padding: '8px 12px 12px' } },
+          { style: { flex: '1 1 auto', minHeight: 0, overflowY: 'auto', padding: '16px 18px 20px' } },
           react.createElement(FileList, {
             t,
             result: active.result,
@@ -781,10 +805,10 @@ window.__ModuleLoader__.load({
           scope === 'workspace'
             ? react.createElement(
                 'div',
-                { style: { marginTop: '14px', paddingTop: '10px', borderTop: '1px solid var(--dsw-alias-border-l1, #2f2f36)' } },
+                { style: { marginTop: '20px', paddingTop: '16px', borderTop: '1px solid var(--dsw-alias-border-l1, #2f2f36)' } },
                 react.createElement(
                   'div',
-                  { style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', marginBottom: '6px' } },
+                  { style: { fontSize: '13px', fontWeight: 600, color: 'var(--dsw-alias-label-primary)', marginBottom: '4px' } },
                   t('historyTitle'),
                 ),
                 react.createElement(HistoryList, {
@@ -1013,22 +1037,23 @@ window.__ModuleLoader__.load({
           {
             type: 'button',
             title: workspace === undefined ? t('projectPick') : t('projectTitle'),
+            'aria-expanded': open,
             onClick: () => panelStore.set(!open),
             style: {
               display: 'inline-flex',
               alignItems: 'center',
-              gap: '6px',
-              padding: '0 10px',
-              height: '26px',
-              borderRadius: '6px',
-              border: '1px solid var(--dsw-alias-border-l2, #3d3d45)',
-              background: hasChanges || open ? '#2d4a7c' : 'var(--dsw-alias-bg-layer-2, #2a2a31)',
-              color: hasChanges || open ? '#cfe0ff' : 'var(--dsw-alias-label-secondary)',
+              gap: '7px',
+              padding: '0 11px',
+              height: '30px',
+              borderRadius: '8px',
+              border: '1px solid var(--dsw-alias-border-l1, #eceef2)',
+              background: 'var(--dsh-review-chip-bg, var(--dsw-alias-bg-base, #fff))',
+              color: hasChanges || open ? ACCENT : 'var(--dsw-alias-label-secondary)',
               fontSize: '12px',
-              fontFamily: 'ui-monospace, Consolas, monospace',
+              fontFamily: UI_FONT,
+              fontWeight: 500,
               whiteSpace: 'nowrap',
               cursor: 'pointer',
-              opacity: 0.92,
             },
           },
           react.createElement(
@@ -1121,7 +1146,8 @@ window.__ModuleLoader__.load({
             'div',
             {
               style: {
-                font: '12px ui-monospace, Consolas, monospace',
+                fontSize: '12px',
+                fontFamily: CODE_FONT,
                 padding: '6px 8px',
                 borderRadius: '6px',
                 background: 'var(--dsw-alias-bg-layer-2, #26262c)',
@@ -1244,10 +1270,10 @@ window.__ModuleLoader__.load({
 
       return react.createElement(
         'div',
-        { style: { display: 'flex', flexDirection: 'column', gap: '6px' } },
+        { style: { display: 'flex', flexDirection: 'column', gap: '8px', fontFamily: UI_FONT } },
         react.createElement(
           'div',
-          { style: { fontSize: '11.5px', color: 'var(--dsw-alias-label-secondary)', padding: '0 2px' } },
+          { style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', padding: '0 2px 4px', fontVariantNumeric: 'tabular-nums' } },
           t('summary', { files: files.length, added, removed }),
         ),
         files.map((file) => {
@@ -1264,6 +1290,8 @@ window.__ModuleLoader__.load({
                 'button',
                 {
                   type: 'button',
+                  className: 'dsh-review-file',
+                  'aria-expanded': open,
                   onClick: () => setExpanded(open ? '' : file.path),
                   title: file.path,
                   style: {
@@ -1273,31 +1301,33 @@ window.__ModuleLoader__.load({
                     flex: '1 1 auto',
                     minWidth: 0,
                     textAlign: 'left',
-                    padding: '6px 8px',
-                    border: '1px solid var(--dsw-alias-border-l1, #2f2f36)',
-                    borderRadius: '6px',
-                    background: open ? '#2d4a7c' : 'var(--dsw-alias-bg-layer-2, #26262c)',
-                    color: open ? '#cfe0ff' : 'var(--dsw-alias-label-primary)',
-                    font: '12px ui-monospace, Consolas, monospace',
+                    padding: '10px',
+                    border: `1px solid ${open ? 'color-mix(in srgb, ' + ACCENT + ' 30%, transparent)' : 'var(--dsh-review-row-border, var(--dsw-alias-border-l1, #eceef2))'}`,
+                    borderRadius: '9px',
+                    background: open ? 'var(--dsw-alias-interactive-bg-hover-accent, #eef2ff)' : 'var(--dsh-review-row-bg, var(--dsw-alias-bg-layer-2, #26262c))',
+                    color: 'var(--dsw-alias-label-primary)',
+                    fontSize: '12px',
+                    fontFamily: UI_FONT,
+                    lineHeight: 1.5,
                     cursor: 'pointer',
                   },
                 },
                 react.createElement(
                   'span',
-                  { style: { color: STATUS_COLORS[file.status?.[0]] ?? 'var(--dsw-alias-label-secondary)', minWidth: '38px', fontSize: '11px' } },
+                  { style: { color: STATUS_COLORS[file.status?.[0]] ?? 'var(--dsw-alias-label-secondary)', flexShrink: 0, fontSize: '12px', fontWeight: 500 } },
                   t(STATUS_KEYS[file.status?.[0]] ?? 'statusOther'),
                 ),
                 react.createElement(
                   'span',
-                  { style: { flex: 1, wordBreak: 'break-all', lineHeight: '1.35' } },
+                  { style: { flex: 1, minWidth: 0, overflowWrap: 'anywhere', lineHeight: 1.5, fontFamily: CODE_FONT } },
                   file.path,
                 ),
                 react.createElement(
                   'span',
-                  { style: { whiteSpace: 'nowrap', fontSize: '11px' } },
-                  react.createElement('span', { style: { color: '#8fd6a4' } }, `+${file.added ?? 0}`),
+                  { style: { whiteSpace: 'nowrap', fontSize: '12px', fontVariantNumeric: 'tabular-nums', flexShrink: 0 } },
+                  react.createElement('span', { style: { color: ADDED } }, `+${file.added ?? 0}`),
                   ' ',
-                  react.createElement('span', { style: { color: '#e0a0a0' } }, `−${file.removed ?? 0}`),
+                  react.createElement('span', { style: { color: REMOVED } }, `−${file.removed ?? 0}`),
                 ),
               ),
               // 还原按钮：点击后弹出确认框（见 ConfirmRevertDialog）。
@@ -1305,18 +1335,19 @@ window.__ModuleLoader__.load({
                 'button',
                 {
                   type: 'button',
+                  className: 'dsh-review-revert',
                   disabled: working,
                   title: t('revert'),
                   onClick: () => setConfirming(file.path),
                   style: {
                     flex: '0 0 auto',
-                    padding: '0 8px',
-                    borderRadius: '6px',
-                    border: '1px solid var(--dsw-alias-border-l1, #2f2f36)',
-                    background: 'var(--dsw-alias-bg-layer-2, #26262c)',
+                    padding: '0 10px',
+                    borderRadius: '9px',
+                    border: '1px solid var(--dsh-review-row-border, var(--dsw-alias-border-l1, #eceef2))',
+                    background: 'var(--dsh-review-row-bg, var(--dsw-alias-bg-layer-2, #26262c))',
                     color: 'var(--dsw-alias-label-secondary)',
-                    fontSize: '11px',
-                    fontFamily: 'inherit',
+                    fontSize: '12px',
+                    fontFamily: UI_FONT,
                     cursor: working ? 'default' : 'pointer',
                     whiteSpace: 'nowrap',
                   },
@@ -1332,10 +1363,12 @@ window.__ModuleLoader__.load({
                       marginTop: '4px',
                       padding: '0',
                       border: '1px solid var(--dsw-alias-border-l1, #2f2f36)',
-                      borderRadius: '6px',
+                      borderRadius: '9px',
                       background: 'var(--dsw-alias-bg-layer-1, #17171b)',
                       // 等宽字体是差异视图可读的基础：比例字体下增删对齐会全乱。
-                      font: '11.5px/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace',
+                      fontSize: '12px',
+                      lineHeight: 1.6,
+                      fontFamily: CODE_FONT,
                       fontVariantLigatures: 'none',
                       // 横向溢出才滚动；纵向交给抽屉整体，避免嵌套滚动条。
                       overflowX: 'auto',
@@ -1344,7 +1377,7 @@ window.__ModuleLoader__.load({
                   isBinaryDiff(diff)
                     ? react.createElement(
                         'div',
-                        { style: { color: 'var(--dsw-alias-label-secondary)', padding: '8px' } },
+                        { style: { color: 'var(--dsw-alias-label-secondary)', padding: '8px', fontFamily: UI_FONT } },
                         t('binaryDiff'),
                       )
                     : react.createElement('div', { style: { padding: '6px 0' } }, renderDiff(diff)),
@@ -1385,7 +1418,7 @@ window.__ModuleLoader__.load({
 
       return react.createElement(
         'div',
-        { style: { padding: '10px 12px', overflowY: 'auto', height: '100%', boxSizing: 'border-box' } },
+        { 'data-desktop-review-surface': 'tab', style: { padding: '16px', overflowY: 'auto', height: '100%', boxSizing: 'border-box', fontFamily: UI_FONT } },
         react.createElement(FileList, {
           t,
           result: state.result,
@@ -1401,11 +1434,11 @@ window.__ModuleLoader__.load({
     /** 侧边栏标签的标题。 */
     function ReviewTabTitle(props) {
       const t = typeof props?.t === 'function' ? props.t : (key) => key
-      return react.createElement('span', { style: { fontSize: '12px' } }, t('title'))
+      return react.createElement('span', { style: { fontSize: '12px', fontFamily: UI_FONT } }, t('title'))
     }
 
     /**
-     * 输入框工具栏上的改动概览入口：显示本轮改动文件数，点击在侧边栏查看详情。
+     * 输入框上方的改动概览入口：显示本轮改动文件数，点击在侧边栏查看详情。
      *
      * 同时负责**记录基线**：观察到会话由"未运行"转为"运行"时记一次，那一轮结束后的
      * 改动就都能对上；若发现没有基线而当前空闲，也补记一次（见下方注释）。
@@ -1470,32 +1503,35 @@ window.__ModuleLoader__.load({
       if (workspace === undefined) return null
 
       const hasChanges = typeof count === 'number' && count > 0
-      // 只用数字，不加"个文件"字样：这一排宽度有限，多出的文字会把相邻控件挤变形。
-      // 完整含义放在悬停提示里。
-      const label = count === null ? t('idle') : String(count)
+      const label = count === null ? t('idle') : t('turnFiles', { count })
 
       return react.createElement(
         'button',
         {
           type: 'button',
+          'data-desktop-review': '',
+          'aria-label': t('title'),
           title: trouble === '' ? t('openInSidebar') : trouble,
           onClick: () => {
-            // 用官方侧边栏打开差异标签——标签的关闭、拖拽、全屏都交给它管理。
-            const open = props?.sidebarRight
-            if (open === undefined) {
+            const sidebar = props?.sidebarRight
+            if (sidebar === undefined) {
               setTrouble(t('sidebarUnavailable'))
               return
             }
             try {
-              // 优先用会话作用域的 openTabIn；没有 sessionId 时退回 openTab（它自行解析会话）。
-              if (sessionId !== undefined && typeof open.openTabIn === 'function') {
-                open.openTabIn(sessionId, KIND, {})
-              } else if (typeof open.openTab === 'function') {
-                open.openTab(KIND, {})
+              // 每次读取侧栏的真实状态，兼容手动收起、关闭标签和切换其它标签。
+              // 收起保留标签及已展开的差异，下一次点击可以继续查看。
+              if (sidebar.isExpanded?.() && sidebar.active?.()?.kind === KIND &&
+                  typeof sidebar.toggleExpanded === 'function') {
+                sidebar.toggleExpanded()
+              } else if (sessionId !== undefined && typeof sidebar.openTabIn === 'function') {
+                sidebar.openTabIn(sessionId, KIND, {})
+              } else if (typeof sidebar.openTab === 'function') {
+                sidebar.openTab(KIND, {})
               } else {
                 // 诊断信息，面向开发者，列出服务实际提供的键名以便定位契约变化。
                 // 标记必须与代码同一行——检查器是逐行判定的。
-                setTrouble(`sidebarRight 没有 openTab/openTabIn（实际键：${Object.keys(open).join(',')}）`) // i18n-allow
+                setTrouble(`sidebarRight 没有 openTab/openTabIn（实际键：${Object.keys(sidebar).join(',')}）`) // i18n-allow
                 return
               }
               setTrouble('')
@@ -1508,15 +1544,19 @@ window.__ModuleLoader__.load({
           style: {
             display: 'inline-flex',
             alignItems: 'center',
+            flex: '0 1 auto',
+            minWidth: 0,
+            maxWidth: '100%',
             gap: '6px',
             padding: '0 8px',
             height: '28px',
-            borderRadius: '6px',
-            border: `1px solid ${trouble === '' ? 'var(--dsw-alias-border-l2, #3d3d45)' : '#6b3b3b'}`,
-            background: hasChanges ? '#2d4a7c' : 'var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-layer-2, #2a2a31))',
-            color: trouble === '' ? (hasChanges ? '#cfe0ff' : 'var(--dsw-alias-label-secondary)') : '#e6b0b0',
+            borderRadius: '8px',
+            border: `1px solid ${trouble === '' ? 'var(--dsw-alias-border-l1, #eceef2)' : '#6b3b3b'}`,
+            background: 'var(--dsh-review-chip-bg, var(--dsw-alias-bg-base, #fff))',
+            color: trouble === '' ? (hasChanges ? ACCENT : 'var(--dsw-alias-label-secondary)') : 'var(--dsw-alias-state-error-primary, #d44747)',
             fontSize: '12px',
-            fontFamily: 'ui-monospace, Consolas, monospace',
+            fontFamily: UI_FONT,
+            fontWeight: 500,
             whiteSpace: 'nowrap',
             cursor: 'pointer',
           },
@@ -1524,7 +1564,7 @@ window.__ModuleLoader__.load({
         // 一个"清单"小图标，避免依赖图标库。
         react.createElement(
           'svg',
-          { width: 12, height: 12, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': 'true' },
+          { width: 12, height: 12, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': 'true', style: { flexShrink: 0 } },
           react.createElement('path', {
             d: 'M3 4.5h10M3 8h10M3 11.5h6',
             stroke: 'currentColor',
@@ -1532,7 +1572,7 @@ window.__ModuleLoader__.load({
             strokeLinecap: 'round',
           }),
         ),
-        react.createElement('span', null, label),
+        react.createElement('span', { style: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' } }, label),
       )
     }
 
@@ -1541,6 +1581,13 @@ window.__ModuleLoader__.load({
      * @param ctx - 客户端 cordis 上下文。
      */
     function apply(ctx) {
+      ctx.effect(() => {
+        const style = document.createElement('style')
+        style.dataset.plugin = name
+        style.textContent = styles
+        document.head.appendChild(style)
+        return () => style.remove()
+      })
       // 诊断挂钩：侧边栏的"打开标签"在会话未被采纳时**静默返回**，失败只表现为
       // "点了没反应"，从界面无法判断是服务缺失、会话不匹配还是标签类型没登记。
       // 把服务挂到 window 上，使这条链路可以被脚本断言。

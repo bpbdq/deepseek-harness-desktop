@@ -2,7 +2,7 @@
   "name": "dsh-client-ui-gitbar",
   "version": "1.0.0",
   "private": true,
-  "description": "Git branch badge with a branch switcher, injected into the dsh composer toolbar (conversation.input.right).",
+  "description": "Git branch switcher and turn-review toolbar above the dsh composer (conversation.input.dock).",
   "type": "module",
   "main": "lib/index.js",
   "exports": {

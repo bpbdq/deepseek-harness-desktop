@@ -1,8 +1,7 @@
 // gitbar 的客户端半边。
 //
-// 插到 `conversation.input.right` —— 输入框工具栏右侧、模型选择器之前，也就是
-// 发送按钮左边那个位置。这个槽是 `kind: 'list'`、`scope: 'session'`，因此第三方
-// 可以安全追加条目，不会被单占位槽拒绝。
+// 在 `conversation.input.dock` 提供输入框上方的工具条。分支与改动审查共享这一排，
+// 不再占用发送按钮前的空间；该 list 槽保留官方输入框和其它 dock 条目。
 //
 // 这个文件刻意手写、不引入打包链：客户端 bundle 的契约很简单——调用 shell 提供的
 // `window.__ModuleLoader__.load({ id, factory })`，在 factory 里 require 共享的基线
@@ -19,20 +18,27 @@ window.__ModuleLoader__.load({
     Object.defineProperty(exports, Symbol.toStringTag, { value: 'Module' })
 
     const react = require('react')
+    const UI_FONT = 'var(--dsw-font-family, "Segoe UI", "Microsoft YaHei", sans-serif)'
+    const CODE_FONT = 'var(--ds-font-family-code, Consolas, "Microsoft YaHei", monospace)'
+    const ACCENT = 'var(--dsw-alias-state-business-primary, #4d6bfe)'
+    const SURFACE = 'var(--dsw-alias-bg-base, #fff)'
+    const BORDER = 'var(--dsw-alias-border-l1, #eceef2)'
+    const SECONDARY = 'var(--dsw-alias-label-secondary, #6b7280)'
     // 与官方包共用同一套基础组件，外观因此自动跟随主题，不需要自己对齐样式。
     const primitives = require('@deepseek-ai/dsh-client-ui-primitives')
 
     /** 稳定插件名，用于诊断。 */
     const name = 'dsh-client-ui-gitbar'
 
-    /** 目标槽位。 */
-    const SLOT = 'conversation.input.right'
+    /** 输入框上方的整行扩展点，以及供审查插件使用的会话级子槽。 */
+    const SLOT = 'conversation.input.dock'
+    const ACTION_SLOT = 'dsh.desktop.composer.actions'
 
     /** 注册 id，卸载时按它撤销。 */
-    const ID = 'gitbar-branch'
+    const ID = 'desktop-context-bar'
 
-    /** 注册顺序：放在该列表的最前面，紧贴模型选择器左侧。 */
-    const ORDER = 10
+    /** 放在待办、目标和消息队列之后，紧贴输入框。 */
+    const ORDER = 100
 
     /** 路由前缀，与 host 半边保持一致。 */
     const API = '/dsh-desktop/gitbar'
@@ -54,6 +60,11 @@ window.__ModuleLoader__.load({
     const zh = {
       switching: '切换中…',
       switchBranch: '切换分支',
+      searchBranches: '搜索分支…',
+      loadingBranches: '正在加载分支…',
+      noMatchingBranches: '没有匹配的分支',
+      currentBranch: '当前分支',
+      remoteTag: '远程',
       stashing: '暂存并切换中…',
       stashAndSwitch: '暂存改动并切换到 {branch}',
       hintCommitOrStash: '提交这些改动，或用下方的「暂存并切换」。',
@@ -72,6 +83,11 @@ window.__ModuleLoader__.load({
     const en = {
       switching: 'Switching…',
       switchBranch: 'Switch branch',
+      searchBranches: 'Search branches…',
+      loadingBranches: 'Loading branches…',
+      noMatchingBranches: 'No matching branches',
+      currentBranch: 'Current branch',
+      remoteTag: 'Remote',
       stashing: 'Stashing and switching…',
       stashAndSwitch: 'Stash changes and switch to {branch}',
       hintCommitOrStash: 'Commit these changes, or use "Stash changes and switch" below.',
@@ -181,6 +197,8 @@ window.__ModuleLoader__.load({
 
       const [status, setStatus] = react.useState(null)
       const [branches, setBranches] = react.useState([])
+      const [query, setQuery] = react.useState('')
+      const [loading, setLoading] = react.useState(false)
       const [open, setOpen] = react.useState(false)
       const [busy, setBusy] = react.useState(false)
       /** 失败信息：`{ key, detail }`，key 是字典键。 */
@@ -223,6 +241,9 @@ window.__ModuleLoader__.load({
       react.useEffect(() => {
         if (!open) return undefined
         let alive = true
+        setQuery('')
+        setBranches([])
+        setLoading(true)
         void (async () => {
           try {
             const payload = await call('branches', { cwd: workspace })
@@ -238,6 +259,8 @@ window.__ModuleLoader__.load({
             }
           } catch (cause) {
             if (alive) setError(describeError(cause))
+          } finally {
+            if (alive) setLoading(false)
           }
         })()
         return () => {
@@ -299,6 +322,7 @@ window.__ModuleLoader__.load({
       //
       // 依赖数组里带 open：只在打开期间挂监听，关闭时立刻摘掉，不给文档留常驻监听。
       const containerRef = react.useRef(null)
+      const triggerRef = react.useRef(null)
 
       /**
        * 下拉菜单的位置：由容器（徽章）的实时位置算出来。
@@ -318,7 +342,17 @@ window.__ModuleLoader__.load({
           const node = containerRef.current
           if (node === null) return
           const rect = node.getBoundingClientRect()
-          setAnchor({ left: rect.left, bottom: window.innerHeight - rect.top + 6 })
+          const width = Math.min(360, window.innerWidth - 24)
+          const above = rect.top - 20
+          const below = window.innerHeight - rect.bottom - 20
+          const placeBelow = above < 180 && below > above
+          setAnchor({
+            width,
+            left: Math.max(12, Math.min(rect.left, window.innerWidth - width - 12)),
+            top: placeBelow ? rect.bottom + 8 : undefined,
+            bottom: placeBelow ? undefined : window.innerHeight - rect.top + 8,
+            maxHeight: Math.min(380, Math.max(0, placeBelow ? below : above)),
+          })
         }
         measure()
         // 窗口尺寸变化或滚动都会让徽章移动，菜单要跟着走。
@@ -338,7 +372,10 @@ window.__ModuleLoader__.load({
           if (node !== null && !node.contains(event.target)) setOpen(false)
         }
         const onKeyDown = (event) => {
-          if (event.key === 'Escape') setOpen(false)
+          if (event.key === 'Escape') {
+            setOpen(false)
+            triggerRef.current?.focus()
+          }
         }
 
         document.addEventListener('mousedown', onPointerDown, true)
@@ -362,52 +399,76 @@ window.__ModuleLoader__.load({
       if (status.changedFiles > 0) flags.push(`*${status.changedFiles}`)
       if (status.ahead > 0) flags.push(`\u2191${status.ahead}`)
       if (status.behind > 0) flags.push(`\u2193${status.behind}`)
+      const search = query.trim().toLowerCase()
+      const visibleBranches = branches.filter((branch) => branch.name.toLowerCase().includes(search))
 
       return react.createElement(
         'div',
         // ref 用于"点击外部关闭"的判定：在这个容器内的点击不关菜单。
-        { ref: containerRef, style: { position: 'relative', display: 'inline-flex' } },
+        {
+          ref: containerRef,
+          'data-desktop-branch': '',
+          style: { position: 'relative', display: 'inline-flex', flex: '1 1 120px', minWidth: 0, maxWidth: '100%' },
+        },
         react.createElement(
           'button',
           {
             type: 'button',
-            title: error === null ? `Git: ${label}${flags.length ? ' ' + flags.join(' ') : ''}` : error,
+            ref: triggerRef,
+            title: error === null ? `Git: ${label}${flags.length ? ' ' + flags.join(' ') : ''}` : t(error.key),
+            'aria-label': `${t('switchBranch')}: ${label}`,
+            'aria-expanded': open,
+            'aria-haspopup': 'dialog',
             onClick: toggleOpen,
             style: {
               display: 'inline-flex',
               alignItems: 'center',
+              minWidth: 0,
+              maxWidth: '100%',
               gap: '6px',
               padding: '0 8px',
               height: '28px',
               borderRadius: '6px',
-              border: `1px solid ${error === null ? '#3d3d45' : '#6b3b3b'}`,
-              background: '#2a2a31',
-              color: error === null ? '#c8c8d0' : '#e6b0b0',
+              border: `1px solid ${error === null ? 'transparent' : '#6b3b3b'}`,
+              background: 'transparent',
+              color: error === null ? 'var(--dsw-alias-label-secondary)' : '#e6b0b0',
               fontSize: '12px',
-              fontFamily: 'ui-monospace, Consolas, monospace',
+              fontFamily: UI_FONT,
               whiteSpace: 'nowrap',
               cursor: 'pointer',
             },
           },
-          // 分支图标：一个极小的分叉符号，避免依赖图标库。
+          // 所有端点与描边都留在 viewBox 内，避免顶部节点被 SVG 视口裁掉。
           react.createElement(
             'svg',
-            { width: 12, height: 12, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': 'true' },
+            { width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.7, 'aria-hidden': 'true', style: { display: 'block', flexShrink: 0 } },
             react.createElement('path', {
-              d: 'M4.5 2.5v8.2M4.5 10.7a2.3 2.3 0 1 0 0 4.6 2.3 2.3 0 0 0 0-4.6ZM11.5 2.5v3a2.6 2.6 0 0 1-2.6 2.6H4.5M11.5 2.5a1.7 1.7 0 1 0 0-3.4 1.7 1.7 0 0 0 0 3.4Z',
-              stroke: 'currentColor',
-              strokeWidth: 1.3,
+              d: 'M6 7.5v9M18 7.5V10a9 9 0 0 1-9 9h-.5',
               strokeLinecap: 'round',
             }),
+            react.createElement('circle', { cx: 6, cy: 5, r: 2.5 }),
+            react.createElement('circle', { cx: 18, cy: 5, r: 2.5 }),
+            react.createElement('circle', { cx: 6, cy: 19, r: 2.5 }),
           ),
-          react.createElement('span', null, label),
-          flags.length > 0 ? react.createElement('span', { style: { opacity: 0.7 } }, flags.join(' ')) : null,
+          react.createElement('span', { style: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' } }, label),
+          flags.length > 0 ? react.createElement('span', { style: { opacity: 0.7, flexShrink: 0 } }, flags.join(' ')) : null,
         ),
 
         open
           ? react.createElement(
               'div',
               {
+                'data-desktop-branch-menu': '',
+                role: 'dialog',
+                'aria-label': t('switchBranch'),
+                onKeyDown: (event) => {
+                  // 输入搜索词时不触发外层聊天框的快捷键。
+                  event.stopPropagation()
+                  if (event.key === 'Escape') {
+                    setOpen(false)
+                    triggerRef.current?.focus()
+                  }
+                },
                 style: {
                   // fixed 而不是 absolute：absolute 相对工具栏里那个小容器定位，会被
                   // 输入框卡片的可视区域裁掉（小窗口里只能看到顶部一条）。fixed 相对
@@ -417,34 +478,64 @@ window.__ModuleLoader__.load({
                   // 否则菜单会钉在屏幕角落、与徽章脱节——实测就飘到了左下角。
                   // anchor 未就绪时先用合理兜底，避免闪到屏幕外。
                   position: 'fixed',
-                  bottom: anchor === undefined ? 'clamp(72px, 12vh, 140px)' : `${anchor.bottom}px`,
+                  top: anchor?.top,
+                  bottom: anchor === undefined ? 'clamp(72px, 12vh, 140px)' : anchor.bottom,
                   left: anchor === undefined ? 'clamp(12px, 3vw, 40px)' : `${anchor.left}px`,
                   zIndex: 9999,
-                  minWidth: '220px',
-                  maxWidth: 'min(420px, calc(100vw - 24px))',
-                  maxHeight: 'min(300px, calc(100vh - 200px))',
-                  overflowY: 'auto',
-                  borderRadius: '8px',
-                  border: '1px solid var(--dsw-alias-border-l2, #3d3d45)',
-                  background: 'var(--dsw-alias-bg-overlay, #232329)',
-                  color: 'var(--dsw-alias-label-primary)',
-                  boxShadow: '0 8px 24px rgba(0,0,0,.45)',
-                  padding: '4px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  boxSizing: 'border-box',
+                  width: anchor?.width ?? 'min(360px, calc(100vw - 24px))',
+                  maxHeight: anchor?.maxHeight ?? 'min(380px, calc(100vh - 24px))',
+                  overflow: 'hidden',
+                  borderRadius: '14px',
+                  border: `1px solid ${BORDER}`,
+                  background: SURFACE,
+                  color: 'var(--dsw-alias-label-primary, #202124)',
+                  fontFamily: UI_FONT,
+                  boxShadow: '0 12px 36px rgba(0,0,0,.12), 0 2px 8px rgba(0,0,0,.04)',
+                  padding: '8px',
                 },
               },
               react.createElement(
                 'div',
                 {
                   style: {
-                    padding: '6px 8px',
-                    fontSize: '11px',
-                    color: '#8a8a93',
-                    borderBottom: '1px solid #2f2f36',
-                    marginBottom: '4px',
+                    padding: '4px 6px 10px',
+                    fontSize: '12px',
+                    lineHeight: 1.5,
+                    fontWeight: 500,
+                    color: SECONDARY,
+                    flexShrink: 0,
                   },
                 },
                 busy ? t('switching') : t('switchBranch'),
               ),
+              react.createElement('input', {
+                type: 'search',
+                value: query,
+                autoFocus: true,
+                placeholder: t('searchBranches'),
+                'aria-label': t('searchBranches'),
+                autoComplete: 'off',
+                spellCheck: false,
+                onChange: (event) => setQuery(event.target.value),
+                style: {
+                  display: 'block',
+                  flexShrink: 0,
+                  boxSizing: 'border-box',
+                  width: '100%',
+                  height: '36px',
+                  marginBottom: '8px',
+                  padding: '0 10px',
+                  border: `1px solid ${BORDER}`,
+                  borderRadius: '8px',
+                  background: SURFACE,
+                  color: 'inherit',
+                  fontFamily: UI_FONT,
+                  fontSize: '13px',
+                },
+              }),
 
               // 失败原因必须显示在菜单里。原先只写进按钮的 hover 提示，而菜单照常
               // 关闭——用户看到的就是"点了没反应"。
@@ -456,15 +547,16 @@ window.__ModuleLoader__.load({
                       style: {
                         margin: '0 4px 6px',
                         padding: '7px 9px',
-                        borderRadius: '6px',
-                        background: '#3a2626',
-                        border: '1px solid #6b3b3b',
-                        color: '#f0c8c8',
-                        fontSize: '11.5px',
+                        borderRadius: '8px',
+                        background: `color-mix(in srgb, var(--dsw-alias-state-error-primary, #d44747) 6%, ${SURFACE})`,
+                        border: '1px solid color-mix(in srgb, var(--dsw-alias-state-error-primary, #d44747) 20%, transparent)',
+                        color: 'var(--dsw-alias-state-error-primary, #d44747)',
+                        fontSize: '12px',
                         lineHeight: 1.5,
                         wordBreak: 'break-word',
                         maxHeight: '150px',
                         overflowY: 'auto',
+                        flexShrink: 0,
                       },
                     },
                     // 第一行是本地化短句（跟界面语言走）。
@@ -479,10 +571,10 @@ window.__ModuleLoader__.load({
                             style: {
                               marginTop: '5px',
                               paddingTop: '5px',
-                              borderTop: '1px solid #4a3030',
-                              fontFamily: 'ui-monospace, Consolas, monospace',
-                              fontSize: '10.5px',
-                              color: '#d8a8a8',
+                              borderTop: '1px solid color-mix(in srgb, currentColor 20%, transparent)',
+                              fontFamily: CODE_FONT,
+                              fontSize: '12px',
+                              color: 'inherit',
                               whiteSpace: 'pre-wrap',
                             },
                           },
@@ -490,7 +582,7 @@ window.__ModuleLoader__.load({
                         ),
                     react.createElement(
                       'div',
-                      { style: { marginTop: '5px', color: '#c9a0a0' } },
+                      { style: { marginTop: '5px' } },
                       t('hintCommitOrStash'),
                     ),
                     // 只在"因未提交改动而被拒"时给出暂存入口：其它失败（例如目标分支
@@ -508,11 +600,12 @@ window.__ModuleLoader__.load({
                               marginTop: '7px',
                               width: '100%',
                               padding: '6px 8px',
-                              borderRadius: '5px',
-                              border: '1px solid #6b3b3b',
-                              background: '#4a2f2f',
-                              color: '#f0d0d0',
-                              font: '11.5px "Segoe UI", "Microsoft YaHei", system-ui, sans-serif',
+                              borderRadius: '6px',
+                              border: '1px solid color-mix(in srgb, currentColor 25%, transparent)',
+                              background: SURFACE,
+                              color: 'inherit',
+                              fontFamily: UI_FONT,
+                              fontSize: '12px',
                               cursor: busy ? 'default' : 'pointer',
                             },
                           },
@@ -531,78 +624,110 @@ window.__ModuleLoader__.load({
                         margin: '0 4px 6px',
                         padding: '6px 9px',
                         borderRadius: '6px',
-                        background: '#243a2a',
-                        border: '1px solid #35603f',
-                        color: '#b6e0c2',
-                        fontSize: '11.5px',
+                        background: `color-mix(in srgb, var(--dsw-alias-state-success-primary, #16834a) 6%, ${SURFACE})`,
+                        border: '1px solid color-mix(in srgb, var(--dsw-alias-state-success-primary, #16834a) 20%, transparent)',
+                        color: 'var(--dsw-alias-state-success-primary, #16834a)',
+                        fontSize: '12px',
                         lineHeight: 1.5,
+                        flexShrink: 0,
                       },
                     },
                     notice,
                   ),
 
-              branches.length === 0
-                ? react.createElement(
-                    'div',
-                    { style: { padding: '6px 8px', fontSize: '12px', color: '#8a8a93' } },
-                    t('noBranches'),
-                  )
-                : branches.map((branch) =>
-                    react.createElement(
-                      'button',
-                      {
-                        key: `${branch.isRemote ? 'r:' : 'l:'}${branch.name}`,
-                        type: 'button',
-                        disabled: busy || branch.current,
-                        onClick: () => void switchTo(branch.name),
-                        title: branch.isRemote ? t('remoteBranch') : t('localBranch'),
-                        style: {
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '6px',
-                          width: '100%',
-                          textAlign: 'left',
-                          padding: '6px 8px',
-                          border: 'none',
-                          borderRadius: '5px',
-                          // 当前分支用不透明的实底 + 高对比文字。
-                          //
-                          // 此前是 `#2d4a7c` 配 `#cfe0ff`（浅蓝叠中蓝），而按钮又是
-                          // `disabled`——禁用会让整项**半透明**，两者叠加导致当前分支
-                          // 几乎看不清（实际反馈的问题）。这里改用主题色的实底，
-                          // 并显式把 disabled 的透明度重置为 1。
-                          background: branch.current
-                            ? 'var(--dsw-alias-state-business-primary, #2d4a7c)'
-                            : 'transparent',
-                          color: branch.current
-                            ? 'var(--dsw-alias-label-primary-inverted, #ffffff)'
-                            : 'var(--dsw-alias-label-primary)',
-                          opacity: 1,
-                          fontWeight: branch.current ? 600 : 400,
-                          font: '12px ui-monospace, Consolas, monospace',
-                          cursor: busy || branch.current ? 'default' : 'pointer',
+              // 只滚动结果列表，搜索框始终留在顶部。
+              react.createElement(
+                'div',
+                { style: { minHeight: 0, overflowY: 'auto', overscrollBehavior: 'contain' }, 'aria-busy': loading || busy },
+                loading || visibleBranches.length === 0
+                  ? react.createElement(
+                      'div',
+                      { role: 'status', style: { padding: '20px 10px', textAlign: 'center', fontSize: '13px', color: SECONDARY } },
+                      t(loading ? 'loadingBranches' : branches.length === 0 ? 'noBranches' : 'noMatchingBranches'),
+                    )
+                  : visibleBranches.map((branch) =>
+                      react.createElement(
+                        'button',
+                        {
+                          key: `${branch.isRemote ? 'r:' : 'l:'}${branch.name}`,
+                          type: 'button',
+                          'data-desktop-branch-option': '',
+                          'aria-current': branch.current ? 'true' : undefined,
+                          disabled: busy || branch.current,
+                          onClick: () => void switchTo(branch.name),
+                          title: `${branch.name}\n${t(branch.current ? 'currentBranch' : branch.isRemote ? 'remoteBranch' : 'localBranch')}`,
+                          style: {
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '10px',
+                            boxSizing: 'border-box',
+                            width: '100%',
+                            minHeight: '36px',
+                            textAlign: 'left',
+                            padding: '8px 10px',
+                            border: 'none',
+                            borderRadius: '7px',
+                            background: branch.current
+                              ? `color-mix(in srgb, ${ACCENT} 8%, ${SURFACE})`
+                              : 'var(--dsh-branch-option-bg, transparent)',
+                            color: branch.current ? ACCENT : 'inherit',
+                            opacity: 1,
+                            fontFamily: UI_FONT,
+                            fontSize: '13px',
+                            lineHeight: 1.5,
+                            fontWeight: branch.current ? 500 : 400,
+                            cursor: busy || branch.current ? 'default' : 'pointer',
+                          },
                         },
-                      },
-                      // 远程分支加一个标记，否则 `origin/x` 与本地 `x` 在列表里难以区分。
-                      // 不透明度从 0.55 提到 0.8：0.55 在深色底上几乎看不见（实际反馈）。
-                      branch.isRemote
-                        ? react.createElement(
-                            'span',
-                            {
-                              style: {
-                                opacity: 0.8,
-                                fontSize: '10px',
-                                color: 'var(--dsw-alias-label-secondary)',
-                              },
-                            },
-                            'R',
-                          )
-                        : null,
-                      react.createElement('span', null, branch.name),
+                        react.createElement('span', { style: { flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, branch.name),
+                        branch.isRemote
+                          ? react.createElement(
+                              'span',
+                              { style: { flexShrink: 0, fontSize: '11px', color: SECONDARY } },
+                              t('remoteTag'),
+                            )
+                          : null,
+                        branch.current
+                          ? react.createElement(
+                              'svg',
+                              { width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': 'true', style: { flexShrink: 0 } },
+                              react.createElement('path', { d: 'm3.5 8 3 3 6-6', stroke: 'currentColor', strokeWidth: 1.6, strokeLinecap: 'round', strokeLinejoin: 'round' }),
+                            )
+                          : null,
+                      ),
                     ),
-                  ),
+              ),
             )
           : null,
+      )
+    }
+
+    /** 独立工具条只负责布局，子槽继续提供原来的会话作用域与操作。 */
+    function ContextBar(props) {
+      return react.createElement(
+        'div',
+        {
+          'data-desktop-context-bar': '',
+          style: {
+            display: 'flex',
+            alignItems: 'center',
+            flexWrap: 'wrap',
+            gap: '6px',
+            minWidth: 0,
+            boxSizing: 'border-box',
+            alignSelf: 'center',
+            width: 'calc(100% - var(--dsh-composer-side-clearance, 16px) - var(--dsh-composer-side-clearance, 16px))',
+            maxWidth: 'var(--dsh-composer-card-max-width, 100%)',
+            // 官方输入卡片的圆角为 22px；背景延伸到卡片后面，填满交接处两角。
+            margin: '0 0 calc(-22px - var(--dsh-composer-stack-gap, 6px))',
+            padding: '8px 12px 30px',
+            borderRadius: '22px 22px 0 0',
+            background: 'var(--dsw-alias-bg-module-platform, #f3f3f3)',
+            fontFamily: UI_FONT,
+          },
+        },
+        react.createElement(BranchChip, props),
+        props.renderSlot(ACTION_SLOT, {}),
       )
     }
 
@@ -611,6 +736,26 @@ window.__ModuleLoader__.load({
      * @param ctx - 客户端 cordis 上下文。
      */
     function apply(ctx) {
+      ctx.effect(() => {
+        const style = document.createElement('style')
+        style.textContent = `
+          [data-desktop-branch-menu] input::placeholder { color: ${SECONDARY}; }
+          [data-desktop-branch-menu] input:focus {
+            outline: 2px solid color-mix(in srgb, ${ACCENT} 25%, transparent);
+            outline-offset: -1px;
+          }
+          [data-desktop-branch-option]:hover:not(:disabled) {
+            --dsh-branch-option-bg: var(--dsw-alias-bg-module-platform, #f5f6f8);
+          }
+          [data-desktop-branch-option]:focus-visible {
+            outline: 2px solid ${ACCENT};
+            outline-offset: -2px;
+          }
+        `
+        document.head.appendChild(style)
+        return () => style.remove()
+      }, 'gitbar: menu styles')
+
       // 注册两套字典。与官方客户端插件同一做法：`locale` 是已提供的服务，
       // 字典挂在自定义命名空间下，`ctx.locale.bind(NS)` 得到按当前语言解析的 `t`。
       ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'gitbar: dictionaries')
@@ -631,9 +776,10 @@ window.__ModuleLoader__.load({
                 id: ID,
                 order: ORDER,
                 locale: NS,
+                children: { [ACTION_SLOT]: { kind: 'list', scope: 'session' } },
                 inject: () => ({ t: ctx.locale.bind(NS) }),
               },
-              BranchChip,
+              ContextBar,
             ),
           ),
         'dsh-client-ui-gitbar: branch chip',
