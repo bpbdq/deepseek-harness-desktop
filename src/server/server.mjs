@@ -54,7 +54,7 @@ const DESKTOP_BUNDLES = ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app']
  * 挂载插件。而 dsh 的模块解析要求 bundle 能从安装位置或 profile 目录解析到，所以
  * `linkBundledPlugins` 会把它们链进 profile 的 node_modules。
  */
-const BUNDLED_PLUGINS = ['dsh-client-ui-gitbar', 'dsh-client-ui-review', 'dsh-client-ui-typography']
+const BUNDLED_PLUGINS = ['dsh-client-ui-gitbar', 'dsh-client-ui-review']
 
 const PROFILE_ROOT_CONFIG = `# dsh-desktop profile root — an empty entry list.
 #
