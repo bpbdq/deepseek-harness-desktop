@@ -17,7 +17,7 @@
 //
 // 各平台可构建性（已实测）：
 //   Windows  setup.exe / .msi       本机可构建
-//   Linux    AppImage / deb / rpm   需 Linux 版 mksquashfs 与 fpm，本机不可
+//   Linux    AppImage / deb         需 Linux 版 mksquashfs 与 fpm，本机不可
 //   macOS    dmg / zip              需 hdiutil / codesign，只在 macOS 上存在
 import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
@@ -139,7 +139,7 @@ function macExplanation() {
  *
  * 这是构建工具链缺失，已实测：
  *   AppImage -> 需要 Linux 版 mksquashfs
- *   deb/rpm  -> 需要 fpm
+ *   deb      -> 需要 fpm
  * 二者都是 Linux 可执行文件，Windows 上无法运行。
  */
 function linuxExplanation() {
@@ -150,13 +150,13 @@ function linuxExplanation() {
 [build]  原因（已实测，非配置问题）：
 [build]    AppImage -> 需要 Linux 版 mksquashfs
 [build]                报错: appimage-12.0.1/linux-x64/mksquashfs: file does not exist
-[build]    deb/rpm  -> 需要 fpm
+[build]    deb      -> 需要 fpm
 [build]                报错: fpm: executable file not found in %PATH%
 [build]    二者都是 Linux 可执行文件。
 [build]
 [build]  三种正确做法：
 [build]    1. 用 GitHub Actions 的 ubuntu runner（推荐，见
-[build]       .github/workflows/release.yml，会产出 AppImage + deb + rpm）
+[build]       .github/workflows/release.yml，会产出 AppImage + deb）
 [build]    2. 在任意 Linux 机器上执行  npm run dist:linux
 [build]    3. 在 WSL 里执行  npm run dist:linux
 [build] ============================================================
@@ -202,7 +202,7 @@ DeepSeek Harness 桌面版 —— 打包
 
 各平台可构建性：
   Windows  setup.exe / .msi        可本机构建
-  Linux    AppImage / deb / rpm    需 Linux 或 CI
+  Linux    AppImage / deb          需 Linux 或 CI
   macOS    dmg / zip               需 macOS 或 CI
 
 产物在 release\<版本>\ 目录下（每个版本一个目录，文件名里不带版本号）。

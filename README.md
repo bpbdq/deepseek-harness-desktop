@@ -59,7 +59,7 @@ dsh web          # 然后在浏览器里打开它打印的地址
 | **不做 fork** | 通过公开 API 使用 `dsh`，升级无合并负担，行为可预期 |
 | **双轨更新** | 智能体运行时与外壳各自独立更新，互不牵连 |
 | **凭据进系统密钥链** | 不落明文，与命令行 `dsh` 的安装完全隔离、可共存 |
-| **一次安装，三平台可用** | Windows（NSIS）、macOS（dmg）、Linux（AppImage / deb / rpm） |
+| **一次安装，三平台可用** | Windows（NSIS）、macOS（dmg）、Linux（AppImage / deb） |
 
 ---
 
@@ -528,7 +528,7 @@ node scripts/check-plugin-i18n.mjs       # 插件里没有硬编码文案
 | 目标 | Windows 构建机 | Linux 构建机 | macOS 构建机 |
 |---|---|---|---|
 | Windows NSIS | ✅ | ❌ | ❌ |
-| Linux AppImage / deb / rpm | ❌（需 `mksquashfs`、`fpm`） | ✅ | ❌ |
+| Linux AppImage / deb | ❌（需 `mksquashfs`、`fpm`） | ✅ | ❌ |
 | macOS dmg | ❌（需 `hdiutil`、`codesign`） | ❌ | ✅ |
 
 因此**三平台产物由 GitHub Actions 生成**：每个平台在自己的 runner 上构建。

@@ -164,9 +164,9 @@ dmg:
   artifactName: ${productName}-${arch}.${ext}
 
 # ------------------------------------------------------------------ Linux -----
-# AppImage and deb build on Windows (electron-builder downloads a static fpm for
-# deb). rpm does NOT: it needs a real rpmbuild toolchain, so it is built on the
-# ubuntu runner in CI instead.
+# 只产出 AppImage 与 deb；**不产出 .rpm**（未列入 target，CI 也不装 rpmbuild）。
+# 两者都无法在 Windows 构建机上生成——AppImage 需要 Linux 版 mksquashfs，
+# deb 需要 fpm，都是 Linux 可执行文件，因此交给 CI 的 ubuntu runner。
 linux:
   icon: build/icon.png
   category: Development
@@ -174,7 +174,7 @@ linux:
   description: >-
     Desktop client for the DeepSeek Harness (dsh) agent runtime. Bundles the
     runtime and a pinned Node, so no Node.js or npm install is required.
-  # deb/rpm metadata: fpm refuses to build without a maintainer, and
+  # deb metadata: fpm refuses to build without a maintainer, and
   # electron-builder falls back to package.json's author field, which has no
   # email here. Replace with the real maintainer before publishing.
   maintainer: dsh-desktop contributors <maintainer@example.com>

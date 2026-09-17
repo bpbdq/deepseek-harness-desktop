@@ -2,8 +2,11 @@ name: release
 
 # 三个平台各用自己的 runner 打包，因为产物必须在目标平台上生成：
 #   * macOS 的 .dmg 需要 hdiutil / codesign / productbuild，只在 macOS 上存在
-#   * Linux 的 .rpm 需要 rpmbuild 工具链
+#   * Linux 的 AppImage 需要 mksquashfs 工具链（electron-builder 会下载静态包）
 #   * Windows 的 .exe（NSIS）需要 makensis
+#
+# 注意：**不产出 .rpm**。electron-builder.yml 的 linux.target 只有 AppImage 与 deb，
+# 因此这里不装 rpmbuild；下面的收集与校验规则里也没有 .rpm。
 #
 # 触发方式：
 #   * 推送 v* 标签            -> 打包并创建 GitHub Release
@@ -39,7 +42,7 @@ jobs:
           - name: Windows (setup.exe)
             os: windows-latest
             target: win
-          - name: Linux (AppImage + deb + rpm)
+          - name: Linux (AppImage + deb)
             os: ubuntu-latest
             target: linux
           - name: macOS (dmg + zip, x64 + arm64)
@@ -170,7 +173,9 @@ jobs:
       - name: 打包 Linux
         if: matrix.target == 'linux'
         run: |
-          # rpm 需要 rpmbuild，electron-builder 不会自动装。
+          # `rpm` 只是为了给 electron-builder 的 rpm 目标备用：本项目**不发布 .rpm**
+          # （linux.target 只有 AppImage + deb），这一步对当前产物没有作用。
+          # 保留而不删除，是因为它同时把 apt 索引刷新到最新，改 Linux 目标时可直接用。
           sudo apt-get update -qq
           sudo apt-get install -y -qq rpm
           npx electron-builder --linux --x64 --publish never
@@ -262,7 +267,7 @@ jobs:
           # 去掉它不影响 electron-updater——新版会退回全量下载那个安装包本身。
           find release -mindepth 2 -maxdepth 2 -type f \
             \( -name '*.exe' -o -name '*.AppImage' -o -name '*.deb' \
-               -o -name '*.rpm' -o -name '*.dmg' -o -name '*.zip' \
+               -o -name '*.dmg' -o -name '*.zip' \
                -o -name 'latest*.yml' \) \
             -exec cp -v {} dist-artifacts/ \;
           echo "--- dist-artifacts ---"
@@ -310,7 +315,7 @@ jobs:
       # 这种"成功但为空"的失败最难发现，所以在这里挡掉。
       - name: 确认产物存在
         run: |
-          count=$(find artifacts -type f \( -name '*.exe' -o -name '*.dmg' -o -name '*.zip' -o -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' -o -name 'latest*.yml' \) | wc -l)
+          count=$(find artifacts -type f \( -name '*.exe' -o -name '*.dmg' -o -name '*.zip' -o -name '*.AppImage' -o -name '*.deb' -o -name 'latest*.yml' \) | wc -l)
           echo "找到 $count 个可发布文件"
           find artifacts -type f | head -40
           if [ "$count" -eq 0 ]; then
