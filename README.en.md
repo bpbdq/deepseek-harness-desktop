@@ -123,6 +123,32 @@ Grab the file for your platform from [Releases](../../releases).
 
 Filenames carry no version number; the version lives in the Release tag.
 
+### Windows: SmartScreen blocks the first run
+
+Double-clicking the installer shows the blue "Windows protected your PC" dialog with an
+**unknown publisher**:
+
+> Microsoft Defender SmartScreen prevented an unrecognized app from starting.
+
+**This is expected, not a corrupted or tampered build.** The artifacts are **not code-signed**,
+and Windows shows this prompt for any program that was downloaded, carries no trusted
+signature, and has not accumulated enough download reputation — the `.exe` and the `.msi`
+behave the same.
+
+To proceed: click **More info → Run anyway**.
+
+> "More info" is small and easy to miss; the "Run anyway" button only appears after you expand it.
+
+**Only a code signing certificate removes this prompt.** With an OV or EV certificate: EV takes
+effect immediately; OV still has to build reputation but no longer says "unknown publisher".
+
+> This differs from macOS: Gatekeeper needs a one-time approval (see below) and stays quiet
+> afterwards, whereas SmartScreen prompts again for **every new version**, because reputation is
+> evaluated per file hash and signing certificate. **Waiting will not make it go away.**
+
+If you have a certificate, configure it as a repository secret and CI signs automatically;
+without one, CI skips signing (the log shows `no signing info identified, signing is skipped`).
+
 On **first launch** the app unpacks the bundled runtime (about 197 MB / 10 000 files).
 Bounded asynchronous writes keep the splash responsive; progress updates do not reload it.
 New archives use a content fingerprint, so installer timestamp changes alone do not trigger
