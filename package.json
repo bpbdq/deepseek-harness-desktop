@@ -10,11 +10,12 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "dev": "npm run build && electron .",
-    "start": "electron .",
+    "dev": "npm run sync:plugins && npm run build && electron .",
+    "start": "npm run sync:plugins && electron .",
     "icon": "node scripts/generate-icon.mjs",
     "stage:runtime": "node scripts/stage-runtime.mjs",
     "stage:node": "node scripts/stage-node.mjs",
+    "sync:plugins": "node scripts/sync-plugins.mjs",
     "link:runtime": "node scripts/link-runtime.mjs",
     "compress:runtime": "node scripts/compress-runtime.mjs",
     "stage": "npm run stage:runtime && npm run stage:node && npm run link:runtime && npm run compress:runtime",
@@ -27,7 +28,7 @@
     "test:i18n": "node scripts/test-i18n.cjs",
     "test:ui-typography": "node scripts/test-ui-typography.cjs",
     "test:update-window": "npm run build && node scripts/test-update-window.cjs",
-    "test:startup": "npm run build && node scripts/test-startup.mjs && node scripts/test-startup-window.cjs",
+    "test:startup": "npm run sync:plugins && npm run build && node scripts/test-startup.mjs && node scripts/test-startup-window.cjs",
     "benchmark:startup": "npm run build && node scripts/benchmark-startup.mjs",
     "probe:web": "node scripts/probe-web.mjs",
     "postinstall": "node scripts/link-runtime.mjs"

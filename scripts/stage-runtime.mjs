@@ -12,8 +12,9 @@
 //   node scripts/stage-runtime.mjs next                # follow a dist-tag (latest|next|alpha)
 import { execFileSync } from 'node:child_process'
 import { createRequire } from 'node:module'
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
+import { syncBundledPlugins } from './sync-plugins.mjs'
 
 const ROOT = resolve(import.meta.dirname, '..')
 const RUNTIME = join(ROOT, 'runtime')
@@ -85,16 +86,7 @@ const version = JSON.parse(readFileSync(anchor, 'utf8')).version
  * 放在 npm install 之后是因为 npm 可能重建 node_modules 目录；放这里能保证插件不
  * 会被后续安装动作清掉。
  */
-const bundledPluginsDir = join(ROOT, 'plugins')
-const plugins = existsSync(bundledPluginsDir) ? readdirSync(bundledPluginsDir) : []
-for (const plugin of plugins) {
-  const source = join(bundledPluginsDir, plugin)
-  if (!existsSync(join(source, 'package.json'))) continue
-  const destination = join(RUNTIME, 'node_modules', plugin)
-  rmSync(destination, { recursive: true, force: true })
-  cpSync(source, destination, { recursive: true })
-  console.log(`[stage-runtime] 内置插件 ${plugin} -> runtime/node_modules/`)
-}
+const plugins = syncBundledPlugins()
 
 // Record what was staged: the app reads this to know the in-box baseline version.
 writeFileSync(

@@ -82,6 +82,11 @@ async function run() {
   await expect('real Web UI mounts after authenticated navigation', () => contents.executeJavaScript(
     "document.getElementById('startup-hint') === null && !!window.__DSH_BOOT__ && document.body.innerText.trim().length > 50",
   ))
+  await expect('add workspace control is available on a fresh profile', () => contents.executeJavaScript(
+    `[...document.querySelectorAll('button')].some(button => /^(添加工作区|Add workspace)$/i.test(button.getAttribute('aria-label') || button.getAttribute('title') || ''))`,
+  ))
+  assert.equal(errors.some(message => /single slot .*already has a registration/.test(message)), false,
+    'duplicate single-slot registration breaks the workspace directory picker')
   assert.equal(new URL(contents.getURL()).origin, ready.url)
   assert.equal(window.getTitle(), 'DeepSeek Harness — test-branch')
   console.log('STARTUP_ERRORS ' + JSON.stringify(errors.sort()))

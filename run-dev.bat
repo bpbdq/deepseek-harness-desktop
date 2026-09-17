@@ -45,9 +45,8 @@ rem so DOM queries are the primary verification path.
 echo  DevTools protocol on http://127.0.0.1:9222
 echo.
 
-rem npx.cmd (not "npx"): a bare "npx" would launch a batch file without `call`,
-rem which transfers control away and never returns to this script.
-call npx.cmd electron . "%WS%" --remote-debugging-port=9222
+rem Use the same sync/build/start flow as command-line development.
+call npm.cmd run dev -- "%WS%" --remote-debugging-port=9222
 echo.
 echo ============================================================
 echo  Electron exited with code %errorlevel%
