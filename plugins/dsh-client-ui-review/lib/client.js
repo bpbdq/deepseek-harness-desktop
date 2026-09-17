@@ -918,16 +918,26 @@ window.__ModuleLoader__.load({
       const open = usePanelOpen()
       const { ref, anchor } = useAnchor(open)
 
-      // 工作区候选：优先问宿主要（最可靠），注入的钩子只作为补充。
+      // 工作区候选与"当前工作区"都由宿主给出。
+      //
+      // 为什么连"当前是哪个"也问宿主：项目级面板挂在全局覆盖层上，不按会话作用域注入
+      // `useSessions`，因此客户端无法从会话推断；而宿主进程启动时就 `chdir` 到了工作区，
+      // `process.cwd()` 是唯一无需推断的答案。此前客户端退到 `candidates[0]`，结果面板
+      // 显示的是另一个项目（实测：用户在 mmsm-amis 里工作，面板却在看应用自己的仓库）。
       const [roots, setRoots] = react.useState([])
+      const [hostCurrent, setHostCurrent] = react.useState(undefined)
       react.useEffect(() => {
         let alive = true
         void (async () => {
           try {
             const result = await call('roots', {})
-            if (alive) setRoots(Array.isArray(result?.roots) ? result.roots : [])
+            if (!alive) return
+            setRoots(Array.isArray(result?.roots) ? result.roots : [])
+            setHostCurrent(asPath(result?.current))
           } catch {
-            if (alive) setRoots([])
+            if (!alive) return
+            setRoots([])
+            setHostCurrent(undefined)
           }
         })()
         return () => {
@@ -939,16 +949,19 @@ window.__ModuleLoader__.load({
       const candidates = roots.length > 0 ? roots : fromHooks
       const inferred = resolveProjectWorkspace(props)
 
-      // 诊断快照：这块面板的状态分布在"宿主给的名单 / 注入的钩子 / 推断"三处，
-      // 出问题时从界面上只能看到"没确定工作区"，无法判断是哪一环空了。挂到 window 上
+      // 诊断快照：这块面板的状态分布在"宿主的当前值 / 宿主给的名单 / 注入的钩子 / 推断"
+      // 四处，出问题时从界面上只能看到"选错了项目"，无法判断是哪一环出错。挂到 window 上
       // 后，脚本可以一眼看清每一环的实际值。
       if (typeof window !== 'undefined') {
-        window.__dshDesktopReviewPanel = { roots, fromHooks, inferred }
+        window.__dshDesktopReviewPanel = { roots, hostCurrent, fromHooks, inferred }
       }
 
-      // 用户手动选定的工作区优先；否则用推断出的那个。两者都没有就取第一个候选。
+      // 优先级：用户手动选定 > 宿主给的当前工作区 > 推断值 > 候选第一项。
+      //
+      // 宿主给的当前值排在推断之前，因为它来自 `process.cwd()`——进程就启动在那个目录，
+      // 不需要任何推断；而"最近会话的 cwd"在项目页拿不到、在会话页也可能指向别的项目。
       const [picked, setPicked] = react.useState(undefined)
-      const workspace = picked ?? inferred ?? candidates[0]
+      const workspace = picked ?? hostCurrent ?? inferred ?? candidates[0]
       const [count, setCount] = react.useState(null)
 
       react.useEffect(() => {

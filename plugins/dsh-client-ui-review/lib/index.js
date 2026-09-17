@@ -334,7 +334,23 @@ function createReviewHandler() {
             // 已登记但如今不存在的目录：跳过，不列给用户。
           }
         }
-        sendJson(response, 200, { roots })
+        // 一并告诉客户端"**当前**是哪个工作区"。
+        //
+        // 为什么由宿主回答：宿主这个进程启动时就被 `process.chdir(workspace)` 到了工作区，
+        // 因此 `process.cwd()` 就是用户此刻正在用的项目——这是唯一不需要推断的来源。
+        //
+        // 客户端此前靠"最近会话的 cwd"推断，但项目级面板挂在全局覆盖层上、不按会话作用域
+        // 注入 `useSessions`，那一环拿不到值，于是退到 `roots[0]`——恰好是另一个项目
+        // （实测面板显示的是应用自己的仓库，而用户在另一个项目里工作）。
+        let current
+        try {
+          current = realpathSync.native(process.cwd())
+        } catch {
+          current = undefined
+        }
+        // 只有在确实合法时才回传，否则客户端会拿它去请求而被安全边界拒绝。
+        const allowed = current !== undefined && roots.includes(current) ? current : undefined
+        sendJson(response, 200, { roots, ...(allowed !== undefined ? { current: allowed } : {}) })
         return
       }
 

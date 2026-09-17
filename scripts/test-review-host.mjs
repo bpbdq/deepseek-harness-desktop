@@ -229,6 +229,21 @@ try {
   check('   可还原未跟踪的新文件 -> 200', res.status, 200)
   check('   还原后该文件从列表消失', (await (await call('/dsh-desktop/review/workspace', { workspace, sessionId: session })).json()).files.some((f) => f.path === 'created-by-agent.txt'), 'false')
 
+  // ---- 9. 宿主必须告诉客户端"当前是哪个工作区" ---------------------------
+  //
+  // 需求反馈："项目改动面板要自动识别当前项目空间，不要手动选，现在识别不准确"。
+  // 根因：项目级面板挂在全局覆盖层上，拿不到 `useSessions`，于是退到候选列表第一项——
+  // 恰好是另一个项目。现在由宿主返回 `process.cwd()`（进程启动时已 chdir 到工作区），
+  // 因此这里断言它确实等于本测试的仓库。
+  console.log('')
+  console.log('--- 当前工作区 ---')
+  res = await call('/dsh-desktop/review/roots', {})
+  json = await res.json()
+  check('9) /roots 返回候选列表', Array.isArray(json.roots) && json.roots.length > 0, 'true')
+  check('   候选里含本测试仓库', (json.roots ?? []).some((r) => r.toLowerCase() === repo.toLowerCase()), 'true')
+  check('   返回了 current', typeof json.current === 'string' && json.current !== '', 'true')
+  check('   current 就是本测试仓库', (json.current ?? '').toLowerCase(), repo.toLowerCase())
+
   // ---- 4. 未登记的工作区 ---------------------------------------------------
   const other = mkdtempSync(join(tmpdir(), 'dsh-review-other-'))
   res = await call('/dsh-desktop/review/changes', { workspace: other, sessionId: session })
